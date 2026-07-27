@@ -1,0 +1,32 @@
+{
+  "name": "com.eliranshaya.mobileadjustgamequality",
+  "version": "1.0.0",
+  "displayName": "Mobile Adjust Game Quality",
+  "description": "Three-tier mobile graphics quality for Unity URP - Low, Balanced and High. One button generates the URP assets, renderers, quality levels, Player Settings and a manager prefab. At runtime it picks a tier from the device and keeps the frame budget by adapting render scale from p95 frame time, with thermal awareness.",
+  "unity": "2022.3",
+  "author": {
+    "name": "Eliran Shaya",
+    "url": "https://github.com/eliranshaya"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "com.unity.render-pipelines.universal": "14.0.0"
+  },
+  "keywords": [
+    "mobile",
+    "urp",
+    "quality",
+    "performance",
+    "render-scale",
+    "thermal",
+    "android",
+    "ios"
+  ],
+  "samples": [
+    {
+      "displayName": "Menu and tier-reactive content",
+      "description": "A settings dropdown bound to the three tiers, and a component that turns optional content off and adjusts animator culling when the tier changes.",
+      "path": "Samples~/Examples"
+    }
+  ]
+}
