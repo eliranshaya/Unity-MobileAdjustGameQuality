@@ -24,20 +24,20 @@ namespace MobileAdjustGameQuality.Samples
 
         void OnEnable()
         {
-            if (QualityTierManager.Instance == null)
+            if (MobileQualityManager.Instance == null)
                 return;
 
-            QualityTierManager.Instance.OnTierChanged += Apply;
+            MobileQualityManager.Instance.OnTierChanged += Apply;
 
             // Apply once on enable as well: the manager raises the event when the tier is
             // resolved at boot, which happens before most scene objects exist.
-            Apply(QualityTierManager.Instance.CurrentTier);
+            Apply(MobileQualityManager.Instance.CurrentTier);
         }
 
         void OnDisable()
         {
-            if (QualityTierManager.Instance != null)
-                QualityTierManager.Instance.OnTierChanged -= Apply;
+            if (MobileQualityManager.Instance != null)
+                MobileQualityManager.Instance.OnTierChanged -= Apply;
         }
 
         void Apply(QualityTier tier)

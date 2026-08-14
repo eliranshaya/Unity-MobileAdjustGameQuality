@@ -16,7 +16,7 @@ namespace MobileAdjustGameQuality
     /// statement simply is not emitted.
     /// </para>
     /// <para>
-    /// That matters because <see cref="AdaptiveQualityController"/> evaluates twice a
+    /// That matters because <see cref="MobileQualityManager"/> evaluates twice a
     /// second for the entire lifetime of the app. Wrapping call sites in <c>#if</c> would
     /// achieve the same thing but would litter every caller; the attribute keeps the
     /// callers readable and gets the identical result.

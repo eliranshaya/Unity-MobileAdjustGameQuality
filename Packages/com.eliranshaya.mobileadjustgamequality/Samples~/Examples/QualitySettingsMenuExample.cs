@@ -31,8 +31,8 @@ namespace MobileAdjustGameQuality.Samples
 
         void OnEnable()
         {
-            if (QualityTierManager.Instance != null)
-                dropdown.SetValueWithoutNotify((int)QualityTierManager.Instance.CurrentTier);
+            if (MobileQualityManager.Instance != null)
+                dropdown.SetValueWithoutNotify((int)MobileQualityManager.Instance.CurrentTier);
 
             dropdown.onValueChanged.AddListener(OnDropdownChanged);
         }
@@ -44,10 +44,10 @@ namespace MobileAdjustGameQuality.Samples
 
         void OnDropdownChanged(int index)
         {
-            if (QualityTierManager.Instance == null)
+            if (MobileQualityManager.Instance == null)
                 return;
 
-            QualityTierManager.Instance.SetTier(index, isPlayerChoice: true);
+            MobileQualityManager.Instance.SetTier(index, isPlayerChoice: true);
         }
     }
 }

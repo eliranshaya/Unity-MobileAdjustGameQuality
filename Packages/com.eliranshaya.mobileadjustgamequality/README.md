@@ -34,7 +34,7 @@ https://github.com/eliranshaya/Unity-MobileAdjustGameQuality.git?path=/Packages/
 To lock to a specific version, append the tag:
 
 ```
-https://github.com/eliranshaya/Unity-MobileAdjustGameQuality.git?path=/Packages/com.eliranshaya.mobileadjustgamequality#v1.0.1
+https://github.com/eliranshaya/Unity-MobileAdjustGameQuality.git?path=/Packages/com.eliranshaya.mobileadjustgamequality#v2.0.0
 ```
 
 ---
@@ -64,7 +64,7 @@ anything Setup writes has to live in the project.
 | 4 | 3 `UniversalRenderPipelineAsset` assets — `MAQ-URP-Low`, `MAQ-URP-Balanced`, `MAQ-URP-High`, each linked to its renderer |
 | 5 | Writes 3 quality levels, each pointing at its URP asset |
 | 6 | Applies the recommended mobile Player Settings (each one individually toggleable) |
-| 7 | Builds `MobileQualityManager.prefab` with the real quality level indices baked in |
+| 7 | Builds `MobileQualityManager.prefab` — one component — with the real quality level indices baked in |
 
 Running Setup again updates in place — it never duplicates. The button relabels itself to
 **Update Existing** once it finds generated assets.
@@ -132,7 +132,7 @@ using MobileAdjustGameQuality;
 // 0 Low, 1 Balanced, 2 High.
 // isPlayerChoice: true makes it sticky, so device detection will not override it
 // on the next launch.
-QualityTierManager.Instance.SetTier(1, isPlayerChoice: true);
+MobileQualityManager.Instance.SetTier(1, isPlayerChoice: true);
 ```
 
 Stop the adaptive controller from changing anything while the player is paying attention:
@@ -140,34 +140,67 @@ Stop the adaptive controller from changing anything while the player is paying a
 ```csharp
 using MobileAdjustGameQuality;
 
-var adaptive = QualityTierManager.Instance.GetComponent<AdaptiveQualityController>();
+var quality = MobileQualityManager.Instance;
 
-void OnCombatStart() => adaptive.AllowAdjustments = false;
+void OnCombatStart() => quality.AllowAdjustments = false;
 
 // Measurement never stopped, so a change that came due mid-fight is applied now
 // rather than restarting its timer from zero.
-void OnCombatEnd() => adaptive.AllowAdjustments = true;
+void OnCombatEnd() => quality.AllowAdjustments = true;
 ```
 
 React to a tier change in gameplay code:
 
 ```csharp
-QualityTierManager.Instance.OnTierChanged += tier =>
+MobileQualityManager.Instance.OnTierChanged += tier =>
 {
     vfxRoot.SetActive(tier >= QualityTier.Balanced);
 };
 ```
 
-Read what the controller is seeing:
+Read what the loop is seeing:
 
 ```csharp
-float p95    = adaptive.LastP95Ms;                            // 95th percentile frame time
-float budget = QualityTierManager.Instance.FrameBudgetMs;     // 16.67 at 60 FPS
-float scale  = QualityTierManager.Instance.CurrentRenderScale;
+float p95     = quality.LastP95Ms;              // 95th percentile frame time
+float budget  = quality.FrameBudgetMs;          // 16.67 at 60 FPS
+float scale   = quality.CurrentRenderScale;
+bool  hot     = quality.IsThermalThrottled;
+bool  locked  = quality.IsRenderScaleLocked;    // oscillation guard engaged
 ```
 
 Import the **Menu and tier-reactive content** sample from the Package Manager for two
 complete examples.
+
+---
+
+## Structure
+
+One MonoBehaviour, `MobileQualityManager`. Everything else is a plain class it owns:
+
+| Class | Kind | Job |
+| --- | --- | --- |
+| `MobileQualityManager` | MonoBehaviour | The only component. Owns the lifetime and the coroutines. |
+| `FrameTimeSampler` | plain | Fixed ring buffer, p95 and mean, zero allocation. |
+| `AdaptiveScaler` | plain | The whole decision policy, including the oscillation guard. |
+| `ThermalSensor` | plain, `IDisposable` | Android JNI, wrapped in try/catch. |
+| `TierSettings` | serializable | Per-tier data. |
+| `AdaptiveSettings` | serializable | Tuning constants, one inspector foldout. |
+
+Three components would mean three execution orders, three lifetimes and three things that
+have to agree with each other. None of the three needed a transform or its own `Update`.
+
+### Cost per frame
+
+`Update` does exactly one thing — write one float into the ring buffer. That cannot become
+a coroutine: a p95 is only meaningful if every frame is measured, and a coroutine resuming
+each frame costs an iterator `MoveNext` plus a scheduler visit, strictly more than the
+method call it would replace.
+
+Everything that does not need per-frame resolution is a coroutine instead — the thermal
+poll every 5 s and the decision tick every 0.5 s. Their `WaitForSecondsRealtime` instances
+are constructed once and reused, so the steady-state GC allocation of the whole package is
+**zero bytes**. `WaitForSecondsRealtime` rather than `WaitForSeconds` because both loops
+have to keep running while the game sits at `Time.timeScale = 0` in a pause menu.
 
 ---
 
@@ -180,11 +213,11 @@ Balanced, otherwise Low. The tier switch happens once during `Awake`, because sw
 URP asset forces a pipeline rebuild the player sees as a hitch. After that the tier only
 changes if the player changes it.
 
-**Dynamic render scale at runtime.** `AdaptiveQualityController` samples unscaled frame time
-into a ring buffer and evaluates twice a second, after a 3-second warmup that also restarts
-on every tier change. Decisions use the 95th percentile in **milliseconds**, never averaged
-FPS — a 60 FPS average with a 45 ms spike every second reads as smooth to an average and as
-stuttering to a person, and milliseconds are linear in the thing being controlled.
+**Dynamic render scale at runtime.** Frame times go into a ring buffer and a coroutine
+evaluates twice a second, after a 3-second warmup that also restarts on every tier change.
+Decisions use the 95th percentile in **milliseconds**, never averaged FPS — a 60 FPS average
+with a 45 ms spike every second reads as smooth to an average and as stuttering to a person,
+and milliseconds are linear in the thing being controlled.
 
 - p95 above budget × 1.08 for 4 sustained seconds → render scale down 0.05, then 20 s cooldown
 - p95 below budget × 0.75 for 12 sustained seconds → render scale up 0.05, then 30 s cooldown
@@ -192,10 +225,42 @@ stuttering to a person, and milliseconds are linear in the thing being controlle
 The step-up window is three times the step-down window on purpose: a wrong step down costs
 sharpness, a wrong step up costs frames.
 
-**Thermal awareness.** `ThermalMonitor` polls Android's `PowerManager` every 5 seconds —
-`getCurrentThermalStatus()` on API 29+, and `getThermalHeadroom(10)` on API 30+, which is a
-forecast where 1.0 means throttling now. Every JNI call is wrapped in try/catch because
-several OEM ROMs throw, and one failure disables thermal input rather than retrying forever.
+**The oscillation guard.** Some devices sit exactly on the boundary: they hold the budget at
+0.85, run out of headroom, drop to 0.80, look fine, climb back to 0.85, and repeat. Every
+one of those moves reallocates render targets, so a device that never settles pays a cost
+forever and gets nothing for it.
+
+`AdaptiveScaler` counts completed down-then-up cycles. Two consecutive cycles and the
+**next** upward step is refused rather than applied and undone — the scale stays on the
+lower value that already held the budget — and upward steps are locked for 5 minutes. If
+the pattern comes back after the lock expires, the lock becomes permanent for the session.
+Downward steps are never blocked by any of this: protecting the frame rate outranks
+everything else. A step in the same direction twice in a row resets the count, because that
+is a device settling somewhere, not a device wobbling.
+
+**Thermal awareness.** `ThermalSensor` polls Android's `PowerManager` every 5 seconds —
+`getCurrentThermalStatus()` on API 29+, and `getThermalHeadroom(10)` on API 30+. Every JNI
+call is wrapped in try/catch because several OEM ROMs throw, and one failure disables
+thermal input rather than retrying forever.
+
+There is **no temperature in degrees** anywhere in this, and there cannot be — Android does
+not expose one to apps, because the temperature at which one phone throttles is meaningless
+on another. What you get instead is the OS's own verdict:
+
+| Signal | Value | Meaning | What the package does |
+| --- | --- | --- | --- |
+| `getCurrentThermalStatus()` | 0 NONE | no throttling | normal adaptation |
+| | 1 LIGHT | throttling started | **stop raising quality** |
+| | 2 MODERATE | frame times drifting | stop raising quality |
+| | 3 SEVERE | actively clocking down | **give quality back** |
+| | 4 CRITICAL | OS out of options | give quality back |
+| `getThermalHeadroom(10)` | < 0.85 | headroom left | normal adaptation |
+| | ≥ 0.85 | throttling forecast | **stop raising quality** |
+| | ≥ 1.00 | throttling now | **give quality back** |
+
+Headroom is the better of the two because it is a forecast: it moves *before* the status
+does, which buys the loop a few seconds to act on its own terms instead of reacting after
+the OS has already taken the performance away.
 
 When the device goes severe the response is ordered, and the order is the point: **first**
 the render scale is pinned to the tier minimum; **only** if that is still not enough does the

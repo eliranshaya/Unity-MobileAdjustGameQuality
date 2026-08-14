@@ -1,5 +1,13 @@
 {
   "dependencies": {
+    "com.eliranshaya.mobileadjustgamequality": {
+      "version": "file:com.eliranshaya.mobileadjustgamequality",
+      "depth": 0,
+      "source": "embedded",
+      "dependencies": {
+        "com.unity.render-pipelines.universal": "14.0.0"
+      }
+    },
     "com.unity.ai.navigation": {
       "version": "2.0.12",
       "depth": 0,

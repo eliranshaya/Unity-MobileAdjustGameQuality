@@ -2,7 +2,7 @@
 // release build. That is also why nothing may ever reference it from a scene or a prefab:
 // a serialized reference to a class that no longer exists leaves a permanent
 // "The referenced script on this Behaviour is missing!" warning on the GameObject.
-// QualityTierManager.Start() adds it with AddComponent inside the same #if.
+// MobileQualityManager.Start() adds it with AddComponent inside the same #if.
 #if DEVELOPER_MODE
 
 using UnityEngine;
@@ -15,9 +15,9 @@ namespace MobileAdjustGameQuality
     /// </summary>
     /// <remarks>
     /// Input goes through IMGUI's own event queue rather than <c>UnityEngine.Input</c> or
-    /// the Input System package, because the overlay has to work in projects configured
-    /// for either backend - and a project set to "Input System Package (New)" throws from
-    /// the legacy <c>Input</c> class at runtime.
+    /// the Input System package, because the overlay has to work in projects configured for
+    /// either backend - and a project set to "Input System Package (New)" throws from the
+    /// legacy <c>Input</c> class at runtime.
     /// </remarks>
     [AddComponentMenu("")]
     [DisallowMultipleComponent]
@@ -27,9 +27,7 @@ namespace MobileAdjustGameQuality
         const float k_TapWindowSeconds = 2f;
         const float k_CornerSize = 96f;
 
-        QualityTierManager m_Manager;
-        AdaptiveQualityController m_Adaptive;
-        ThermalMonitor m_Thermal;
+        MobileQualityManager m_Manager;
 
         bool m_Visible;
         int m_TapCount;
@@ -41,9 +39,7 @@ namespace MobileAdjustGameQuality
 
         void Awake()
         {
-            m_Manager = GetComponent<QualityTierManager>();
-            m_Adaptive = GetComponent<AdaptiveQualityController>();
-            m_Thermal = GetComponent<ThermalMonitor>();
+            m_Manager = GetComponent<MobileQualityManager>();
         }
 
         void OnDestroy()
@@ -63,48 +59,38 @@ namespace MobileAdjustGameQuality
 
             // Sized from the font so the panel does not clip its own buttons on a phone,
             // where the DPI-scaled text is roughly twice the size it is in the editor.
-            float width = Mathf.Min(Mathf.Max(420f, m_Text.fontSize * 24f), Screen.width - 20f);
-            float height = Mathf.Min(m_Text.fontSize * 17f + 60f, Screen.height - 20f);
+            float width = Mathf.Min(Mathf.Max(440f, m_Text.fontSize * 25f), Screen.width - 20f);
+            float height = Mathf.Min(m_Text.fontSize * 18f + 60f, Screen.height - 20f);
             GUILayout.BeginArea(new Rect(10f, 10f, width, height), m_Panel);
             GUILayout.Label("MOBILE QUALITY", m_Text);
 
             if (m_Manager == null)
             {
-                GUILayout.Label("QualityTierManager missing.", m_Text);
+                GUILayout.Label("MobileQualityManager missing.", m_Text);
                 GUILayout.EndArea();
                 return;
             }
 
             float budget = m_Manager.FrameBudgetMs;
+            bool over = m_Manager.LastP95Ms > budget;
+
             GUILayout.Label($"Tier          {m_Manager.CurrentTier}  (quality level {m_Manager.Current.unityQualityLevel})", m_Text);
             GUILayout.Label($"Target        {m_Manager.Current.targetFrameRate} fps  =  {budget:F2} ms budget", m_Text);
-
-            if (m_Adaptive != null)
-            {
-                bool over = m_Adaptive.LastP95Ms > budget;
-                GUILayout.Label($"Avg           {m_Adaptive.LastAvgMs:F2} ms", m_Text);
-                GUILayout.Label($"p95           {m_Adaptive.LastP95Ms:F2} ms   {(over ? "OVER" : "ok")}", m_Text);
-                GUILayout.Label($"Adjustments   {(m_Adaptive.AllowAdjustments ? "allowed" : "blocked by gameplay")}" +
-                                $"{(m_Adaptive.IsThermalThrottled ? "  [thermal fallback active]" : string.Empty)}", m_Text);
-            }
-            else
-            {
-                GUILayout.Label("AdaptiveQualityController missing.", m_Text);
-            }
-
+            GUILayout.Label($"Avg           {m_Manager.LastAvgMs:F2} ms", m_Text);
+            GUILayout.Label($"p95           {m_Manager.LastP95Ms:F2} ms   {(over ? "OVER" : "ok")}", m_Text);
             GUILayout.Label($"Render scale  {m_Manager.CurrentRenderScale:F2}" +
                             $"  (min {m_Manager.Current.minRenderScale:F2} / max {m_Manager.Current.maxRenderScale:F2})", m_Text);
 
-            if (m_Thermal != null)
-            {
-                string headroom = float.IsNaN(m_Thermal.Headroom) ? "n/a" : m_Thermal.Headroom.ToString("F2");
-                GUILayout.Label($"Thermal       {m_Thermal.Level}   headroom {headroom}" +
-                                $"{(m_Thermal.IsWarm ? "  WARM" : string.Empty)}", m_Text);
-            }
-            else
-            {
-                GUILayout.Label("Thermal       no monitor", m_Text);
-            }
+            string lockState = m_Manager.IsRenderScaleLockedForSession
+                ? "locked for session"
+                : m_Manager.IsRenderScaleLocked ? "locked (temporary)" : "free";
+            GUILayout.Label($"Step up       {lockState}", m_Text);
+
+            GUILayout.Label($"Adjustments   {(m_Manager.AllowAdjustments ? "allowed" : "blocked by gameplay")}" +
+                            $"{(m_Manager.IsThermalThrottled ? "  [thermal fallback active]" : string.Empty)}", m_Text);
+
+            string headroom = float.IsNaN(m_Manager.ThermalHeadroom) ? "n/a" : m_Manager.ThermalHeadroom.ToString("F2");
+            GUILayout.Label($"Thermal       {m_Manager.ThermalLevel}   headroom {headroom}", m_Text);
 
             GUILayout.Label($"GPU           {SystemInfo.graphicsDeviceName}", m_Text);
             GUILayout.Label($"API           {SystemInfo.graphicsDeviceType}  sm{SystemInfo.graphicsShaderLevel}", m_Text);

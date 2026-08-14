@@ -36,7 +36,7 @@ https://github.com/eliranshaya/Unity-MobileAdjustGameQuality.git?path=/Packages/
 To lock to a specific version, append the tag:
 
 ```
-https://github.com/eliranshaya/Unity-MobileAdjustGameQuality.git?path=/Packages/com.eliranshaya.mobileadjustgamequality#v1.0.1
+https://github.com/eliranshaya/Unity-MobileAdjustGameQuality.git?path=/Packages/com.eliranshaya.mobileadjustgamequality#v2.0.0
 ```
 
 ---
@@ -88,14 +88,14 @@ checkbox:
 using MobileAdjustGameQuality;
 
 // 0 Low, 1 Balanced, 2 High. isPlayerChoice makes the selection stick across launches.
-QualityTierManager.Instance.SetTier(1, isPlayerChoice: true);
+MobileQualityManager.Instance.SetTier(1, isPlayerChoice: true);
 ```
 
 ```csharp
 // Hold every adaptive change until a natural break.
-var adaptive = QualityTierManager.Instance.GetComponent<AdaptiveQualityController>();
-adaptive.AllowAdjustments = false;   // entering combat
-adaptive.AllowAdjustments = true;    // combat over
+var quality = MobileQualityManager.Instance;
+quality.AllowAdjustments = false;   // entering combat
+quality.AllowAdjustments = true;    // combat over
 ```
 
 ---
@@ -107,11 +107,15 @@ screen resolution, graphics API and shader level, and maps the score onto a tier
 happens once in `Awake`, because changing the URP asset forces a pipeline rebuild the player
 sees as a hitch.
 
-**Dynamic render scale at runtime.** `AdaptiveQualityController` measures unscaled frame time
-and evaluates twice a second, deciding on the 95th percentile in milliseconds rather than
-averaged FPS. Four seconds sustained over budget steps the render scale down by 0.05; twelve
-seconds sustained under budget steps it up, each followed by a cooldown. Render scale is the
-only setting moved at runtime.
+**Dynamic render scale at runtime.** A coroutine evaluates twice a second, deciding on the
+95th percentile frame time in milliseconds rather than averaged FPS. Four seconds sustained
+over budget steps the render scale down by 0.05; twelve seconds sustained under budget steps
+it up, each followed by a cooldown. Render scale is the only setting moved at runtime.
+
+**The oscillation guard.** A device that keeps stepping down and back up pays a render
+target reallocation every time and gains nothing. After two consecutive down-then-up cycles
+the next upward step is refused and upward steps lock for 5 minutes; if the pattern returns
+after that, the lock is permanent for the session. Downward steps are never blocked.
 
 **Thermal awareness.** When Android reports severe throttling, the render scale is pinned to
 the tier minimum first, and the frame cap is only dropped if that was not enough — halving

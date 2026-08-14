@@ -9,7 +9,7 @@ namespace MobileAdjustGameQuality.EditorTools
     internal static class QualityPrefabBuilder
     {
         const string k_TiersProperty = "tiers";
-        const string k_Owner = "QualityTierManager.tiers";
+        const string k_Owner = "MobileQualityManager.tiers";
 
         /// <summary>
         /// Creates or overwrites the manager prefab and writes the real quality level
@@ -39,11 +39,11 @@ namespace MobileAdjustGameQuality.EditorTools
 
             try
             {
-                // Order matters only for readability in the inspector, but the manager
-                // has to go first because AdaptiveQualityController requires it.
-                var manager = temp.AddComponent<QualityTierManager>();
-                temp.AddComponent<ThermalMonitor>();
-                temp.AddComponent<AdaptiveQualityController>();
+                // One component, deliberately. The frame time window, the thermal sensor
+                // and the decision policy are plain classes the manager owns, so there is
+                // one execution order and one lifetime rather than three that have to
+                // agree with each other.
+                var manager = temp.AddComponent<MobileQualityManager>();
 
                 WriteTiers(manager, qualityLevelIndices, report);
 
@@ -69,14 +69,14 @@ namespace MobileAdjustGameQuality.EditorTools
             }
         }
 
-        static void WriteTiers(QualityTierManager manager, int[] qualityLevelIndices, SetupReport report)
+        static void WriteTiers(MobileQualityManager manager, int[] qualityLevelIndices, SetupReport report)
         {
             var so = new SerializedObject(manager);
             SerializedProperty tiers = so.FindProperty(k_TiersProperty);
 
             if (tiers == null || !tiers.isArray)
             {
-                report.Problem($"'{k_TiersProperty}' was not found on QualityTierManager; " +
+                report.Problem($"'{k_TiersProperty}' was not found on MobileQualityManager; " +
                                "the prefab was saved with whatever defaults the component had.");
                 return;
             }

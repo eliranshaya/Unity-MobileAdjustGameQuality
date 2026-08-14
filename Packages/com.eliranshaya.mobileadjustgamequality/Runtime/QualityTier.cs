@@ -5,7 +5,7 @@ namespace MobileAdjustGameQuality
     /// </summary>
     /// <remarks>
     /// The integer values are part of the serialized data: they index into
-    /// <see cref="QualityTierManager"/>'s tier array and are persisted in
+    /// <see cref="MobileQualityManager"/>'s tier array and are persisted in
     /// <c>PlayerPrefs</c>. Never reorder or renumber them.
     /// </remarks>
     public enum QualityTier

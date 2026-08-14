@@ -24,7 +24,7 @@ namespace MobileAdjustGameQuality
     /// cold-start guess, not as the answer.
     /// </para>
     /// <para>
-    /// <see cref="AdaptiveQualityController"/> exists precisely because this cannot be
+    /// <see cref="MobileQualityManager"/>'s adaptive loop exists precisely because this cannot be
     /// trusted: a wrong guess is corrected within seconds by real frame times.
     /// </para>
     /// </remarks>
