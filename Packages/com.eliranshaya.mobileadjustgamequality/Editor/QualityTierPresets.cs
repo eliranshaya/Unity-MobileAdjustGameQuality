@@ -48,7 +48,6 @@ namespace MobileAdjustGameQuality.EditorTools
         /// <summary>The values written into a generated <c>UniversalRenderPipelineAsset</c>.</summary>
         internal class UrpPreset
         {
-            internal float renderScale;
             internal int upscalingFilter;
             internal bool supportsHdr;
             internal int msaa;
@@ -122,7 +121,6 @@ namespace MobileAdjustGameQuality.EditorTools
             // Low
             new UrpPreset
             {
-                renderScale = 0.75f,
                 upscalingFilter = (int)UpscalingFilterSelection.Linear,
                 supportsHdr = false,
                 msaa = (int)MsaaQuality.Disabled,
@@ -157,7 +155,6 @@ namespace MobileAdjustGameQuality.EditorTools
             // Balanced
             new UrpPreset
             {
-                renderScale = 0.85f,
                 upscalingFilter = (int)UpscalingFilterSelection.Linear,
                 supportsHdr = false,
                 msaa = (int)MsaaQuality.Disabled,
@@ -192,7 +189,6 @@ namespace MobileAdjustGameQuality.EditorTools
             // High
             new UrpPreset
             {
-                renderScale = 1f,
                 upscalingFilter = (int)UpscalingFilterSelection.Auto,
                 supportsHdr = false,
                 msaa = (int)MsaaQuality.Disabled,

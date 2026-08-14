@@ -47,7 +47,13 @@ namespace MobileAdjustGameQuality.EditorTools
             var so = new SerializedObject(asset);
 
             // Quality
-            SerializedFieldHelper.TrySet(so, "m_RenderScale", preset.renderScale);
+            //
+            // Render scale is read from the runtime tier defaults rather than from a number
+            // in this file. The manager overwrites it at boot anyway, so a second copy here
+            // would not change what renders - it would only make the generated asset show a
+            // value the game never uses, which is exactly the kind of quiet disagreement
+            // that costs an afternoon to track down.
+            SerializedFieldHelper.TrySet(so, "m_RenderScale", MobileQualityManager.CreateDefaultTiers()[tier].baseRenderScale);
             SerializedFieldHelper.TrySet(so, "m_UpscalingFilter", preset.upscalingFilter);
             SerializedFieldHelper.TrySet(so, "m_SupportsHDR", preset.supportsHdr);
             SerializedFieldHelper.TrySet(so, "m_MSAA", preset.msaa);

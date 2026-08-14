@@ -637,7 +637,14 @@ namespace MobileAdjustGameQuality
             }
         }
 
-        static TierSettings[] CreateDefaultTiers()
+        /// <summary>
+        /// The shipping tier values, freshly allocated. This is the single source of truth:
+        /// the serialized <c>tiers</c> field initialises from it, and the Setup window reads
+        /// it when authoring the generated URP assets so their baked render scale matches
+        /// what the manager will apply at boot.
+        /// </summary>
+        /// <returns>Three tier settings, in Low / Balanced / High order.</returns>
+        public static TierSettings[] CreateDefaultTiers()
         {
             // The single source of truth for tier values. Setup overwrites only
             // unityQualityLevel, with the indices the three quality levels actually landed
