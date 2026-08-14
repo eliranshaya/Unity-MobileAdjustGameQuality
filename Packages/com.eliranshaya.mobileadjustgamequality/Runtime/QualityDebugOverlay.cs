@@ -299,10 +299,16 @@ namespace MobileAdjustGameQuality
 
         void EnsureStyles(OverlaySettings settings)
         {
-            // Scale with DPI so the overlay stays legible on a phone instead of rendering as
-            // a row of ants next to a 3x UI, then apply the user's multiplier on top.
-            int fontSize = Mathf.Max(10, Mathf.RoundToInt(
-                (Screen.dpi > 0f ? Screen.dpi / 18f : 14f) * settings.scale));
+            // Sized from the render target, not from Screen.dpi.
+            //
+            // dpi is the obvious choice and it is wrong here: in the editor Game view it
+            // reports the *monitor's* DPI, typically 96, which divided down to a 10 pixel
+            // font and a panel the size of a postage stamp no matter how large the Game view
+            // was. The larger screen dimension tracks the surface the overlay is actually
+            // drawn into, so one rule covers a 2400px phone in either orientation and a
+            // small Game view alike.
+            float reference = Mathf.Max(Screen.width, Screen.height);
+            int fontSize = Mathf.Max(14, Mathf.RoundToInt(reference / 55f * settings.scale));
 
             if (m_Text == null)
             {
@@ -317,12 +323,12 @@ namespace MobileAdjustGameQuality
             m_Text.fontSize = fontSize;
 
             if (m_Panel == null)
-            {
-                m_Panel = new GUIStyle(GUI.skin.box)
-                {
-                    padding = new RectOffset(12, 12, 10, 10)
-                };
-            }
+                m_Panel = new GUIStyle(GUI.skin.box);
+
+            // Padding tracks the font, or a 3x scale would put huge text in a box with a
+            // hairline border around it.
+            int pad = Mathf.RoundToInt(fontSize * 0.6f);
+            m_Panel.padding = new RectOffset(pad, pad, pad, pad);
 
             if (m_PanelTexture == null || !Mathf.Approximately(m_TextureOpacity, settings.backgroundOpacity))
             {

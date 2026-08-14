@@ -115,8 +115,9 @@ namespace MobileAdjustGameQuality
         [Tooltip("Show the three buttons that switch tier live.")]
         public bool showTierButtons = true;
 
-        [Tooltip("Multiplies the DPI-derived font size. Raise it if the overlay is hard to " +
-                 "read on device, lower it if it covers too much of the game.")]
+        [Tooltip("Multiplies the font size, which is derived from the render target size. " +
+                 "Raise it if the overlay is hard to read, lower it if it covers too much " +
+                 "of the game.")]
         [Range(0.5f, 3f)]
         public float scale = 1f;
 
