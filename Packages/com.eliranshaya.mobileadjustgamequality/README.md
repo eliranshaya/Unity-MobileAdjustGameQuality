@@ -34,7 +34,7 @@ https://github.com/eliranshaya/Unity-MobileAdjustGameQuality.git?path=/Packages/
 To lock to a specific version, append the tag:
 
 ```
-https://github.com/eliranshaya/Unity-MobileAdjustGameQuality.git?path=/Packages/com.eliranshaya.mobileadjustgamequality#v2.1.1
+https://github.com/eliranshaya/Unity-MobileAdjustGameQuality.git?path=/Packages/com.eliranshaya.mobileadjustgamequality#v2.2.0
 ```
 
 ---
@@ -187,6 +187,7 @@ One MonoBehaviour, `MobileQualityManager`. Everything else is a plain class it o
 | `ThermalSensor` | plain, `IDisposable` | Android JNI and the iOS plugin call, both wrapped in try/catch. |
 | `TierSettings` | serializable | Per-tier data. |
 | `AdaptiveSettings` | serializable | Tuning constants, one inspector foldout. |
+| `OverlaySettings` | serializable | Debug HUD position, fields and styling. |
 | `MobileQualityThermalNative.mm` | native, iOS | Six lines bridging `NSProcessInfo.thermalState`. |
 | `MobileQualityThermalIOSPostProcess` | editor, iOS only | Verifies the `.mm` reached the Xcode project. |
 
@@ -343,10 +344,29 @@ models you have not.
 ## Developer mode
 
 `Tools > Mobile Quality > Developer Mode` toggles the `DEVELOPER_MODE` scripting define on
-Android, iOS and Standalone. With it on you get diagnostics through `QualityDevLog` and an
-on-screen overlay — toggle with **F1**, or four taps in the top-right corner — showing tier,
-budget, average and p95 frame time, render scale, thermal state and GPU name, plus three
-buttons to switch tier live.
+Android, iOS and Standalone. With it on you get diagnostics through `QualityDevLog` and the
+on-screen overlay.
+
+### The overlay
+
+Two gates, deliberately. The define decides whether the overlay **exists**; the **Show**
+checkbox under *Overlay* on the prefab decides whether it is **drawn**. So you can hand a
+single developer build to testers and still turn the HUD off, and a release build carries
+none of it either way.
+
+| Setting | What it does |
+| --- | --- |
+| **Show** | Master switch. Off means the component is never even added — no `OnGUI` call at all. |
+| **Anchor** | Nine positions: any corner, any edge centre, or dead centre. The panel measures itself and pins accordingly. |
+| **Fields** | Multi-select dropdown, 12 readouts: tier, target FPS, frame budget, current FPS, average ms, p95 ms, render scale, thermal, heat band, oscillation lock, adjustments gate, device. Tick only what you are chasing. |
+| **Show Tier Buttons** | The three live tier-switch buttons. |
+| **Scale** | Multiplies the DPI-derived font size, 0.5x to 3x. |
+| **Background Opacity** | Panel darkness. |
+| **Margin** | Distance from the screen edge. |
+
+At runtime, **F1** or four taps in the top-right corner hide and show it without touching
+the prefab. The lines are rebuilt once per frame on the IMGUI layout pass and reused for
+the repaint, so the interpolated strings are not built twice.
 
 With the define off all of that is compiled out. The overlay class does not exist, and the
 log calls are removed together with their argument expressions, so the interpolated strings

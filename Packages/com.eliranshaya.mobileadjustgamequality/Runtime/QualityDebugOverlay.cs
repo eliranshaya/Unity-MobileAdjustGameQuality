@@ -2,22 +2,32 @@
 // release build. That is also why nothing may ever reference it from a scene or a prefab:
 // a serialized reference to a class that no longer exists leaves a permanent
 // "The referenced script on this Behaviour is missing!" warning on the GameObject.
-// MobileQualityManager.Start() adds it with AddComponent inside the same #if.
+// MobileQualityManager.Start() adds it with AddComponent inside the same #if, and only when
+// OverlaySettings.show is on.
 #if DEVELOPER_MODE
 
+using System.Collections.Generic;
 using UnityEngine;
 
 namespace MobileAdjustGameQuality
 {
     /// <summary>
     /// On-screen IMGUI readout of everything the quality system is doing, plus live tier
-    /// switching. Developer builds only.
+    /// switching. Developer builds only, and only when <see cref="OverlaySettings.show"/>
+    /// is on.
     /// </summary>
     /// <remarks>
-    /// Input goes through IMGUI's own event queue rather than <c>UnityEngine.Input</c> or
-    /// the Input System package, because the overlay has to work in projects configured for
+    /// <para>
+    /// Input goes through IMGUI's own event queue rather than <c>UnityEngine.Input</c> or the
+    /// Input System package, because the overlay has to work in projects configured for
     /// either backend - and a project set to "Input System Package (New)" throws from the
     /// legacy <c>Input</c> class at runtime.
+    /// </para>
+    /// <para>
+    /// The panel measures its own content and then anchors itself, rather than sitting in a
+    /// fixed rect. That is what lets the anchor be a dropdown: a box pinned to the bottom
+    /// right has to know how tall it is before it knows where its top edge goes.
+    /// </para>
     /// </remarks>
     [AddComponentMenu("")]
     [DisallowMultipleComponent]
@@ -25,17 +35,23 @@ namespace MobileAdjustGameQuality
     {
         const int k_TapsToToggle = 4;
         const float k_TapWindowSeconds = 2f;
-        const float k_CornerSize = 96f;
+        const float k_TapCornerSize = 96f;
 
         MobileQualityManager m_Manager;
 
-        bool m_Visible;
+        // Rebuilt once per frame on the Layout event and reused for Repaint. IMGUI runs
+        // OnGUI at least twice a frame, and these lines are interpolated strings.
+        readonly List<string> m_Lines = new List<string>(16);
+
+        bool m_Visible = true;
         int m_TapCount;
         float m_FirstTapTime;
+        Rect m_PanelRect;
 
         GUIStyle m_Panel;
         GUIStyle m_Text;
         Texture2D m_PanelTexture;
+        float m_TextureOpacity = -1f;
 
         void Awake()
         {
@@ -50,67 +66,192 @@ namespace MobileAdjustGameQuality
 
         void OnGUI()
         {
+            if (m_Manager == null)
+                return;
+
+            OverlaySettings settings = m_Manager.Overlay;
+            if (settings == null || !settings.show)
+                return;
+
+            EnsureStyles(settings);
             HandleToggleInput();
 
             if (!m_Visible)
                 return;
 
-            EnsureStyles();
-
-            // Sized from the font so the panel does not clip its own buttons on a phone,
-            // where the DPI-scaled text is roughly twice the size it is in the editor.
-            float width = Mathf.Min(Mathf.Max(440f, m_Text.fontSize * 25f), Screen.width - 20f);
-            float height = Mathf.Min(m_Text.fontSize * 18f + 60f, Screen.height - 20f);
-            GUILayout.BeginArea(new Rect(10f, 10f, width, height), m_Panel);
-            GUILayout.Label("MOBILE QUALITY", m_Text);
-
-            if (m_Manager == null)
+            if (Event.current.type == EventType.Layout)
             {
-                GUILayout.Label("MobileQualityManager missing.", m_Text);
-                GUILayout.EndArea();
-                return;
+                BuildLines(settings);
+                m_PanelRect = Measure(settings);
             }
 
-            float budget = m_Manager.FrameBudgetMs;
-            bool over = m_Manager.LastP95Ms > budget;
+            GUILayout.BeginArea(m_PanelRect, m_Panel);
 
-            GUILayout.Label($"Tier          {m_Manager.CurrentTier}  (quality level {m_Manager.Current.unityQualityLevel})", m_Text);
-            GUILayout.Label($"Target        {m_Manager.Current.targetFrameRate} fps  =  {budget:F2} ms budget", m_Text);
-            GUILayout.Label($"Avg           {m_Manager.LastAvgMs:F2} ms", m_Text);
-            GUILayout.Label($"p95           {m_Manager.LastP95Ms:F2} ms   {(over ? "OVER" : "ok")}", m_Text);
-            GUILayout.Label($"Render scale  {m_Manager.CurrentRenderScale:F2}" +
-                            $"  (min {m_Manager.Current.minRenderScale:F2} / max {m_Manager.Current.maxRenderScale:F2})", m_Text);
+            for (int i = 0; i < m_Lines.Count; i++)
+                GUILayout.Label(m_Lines[i], m_Text);
 
-            string lockState = m_Manager.IsRenderScaleLockedForSession
-                ? "locked for session"
-                : m_Manager.IsRenderScaleLocked ? "locked (temporary)" : "free";
-            GUILayout.Label($"Step up       {lockState}", m_Text);
+            if (settings.showTierButtons)
+            {
+                float buttonHeight = m_Text.fontSize * 2.2f;
 
-            GUILayout.Label($"Adjustments   {(m_Manager.AllowAdjustments ? "allowed" : "blocked by gameplay")}" +
-                            $"{(m_Manager.IsThermalThrottled ? "  [thermal fallback active]" : string.Empty)}", m_Text);
-
-            string headroom = float.IsNaN(m_Manager.ThermalHeadroom) ? "n/a" : m_Manager.ThermalHeadroom.ToString("F2");
-            string heatState = m_Manager.IsThermalThrottled ? "SEVERE - pinned"
-                : m_Manager.IsSheddingHeat ? "WARM - shedding"
-                : m_Manager.IsDeviceWarm ? "WARM - holding"
-                : "cool";
-            GUILayout.Label($"Thermal       {m_Manager.ThermalLevel}   headroom {headroom}", m_Text);
-            GUILayout.Label($"Heat response {heatState}", m_Text);
-
-            GUILayout.Label($"GPU           {SystemInfo.graphicsDeviceName}", m_Text);
-            GUILayout.Label($"API           {SystemInfo.graphicsDeviceType}  sm{SystemInfo.graphicsShaderLevel}", m_Text);
-
-            GUILayout.Space(6f);
-            GUILayout.BeginHorizontal();
-            if (GUILayout.Button("Low", GUILayout.Height(34f)))
-                m_Manager.SetTier(QualityTier.Low);
-            if (GUILayout.Button("Balanced", GUILayout.Height(34f)))
-                m_Manager.SetTier(QualityTier.Balanced);
-            if (GUILayout.Button("High", GUILayout.Height(34f)))
-                m_Manager.SetTier(QualityTier.High);
-            GUILayout.EndHorizontal();
+                GUILayout.Space(m_Text.fontSize * 0.4f);
+                GUILayout.BeginHorizontal();
+                if (GUILayout.Button("Low", GUILayout.Height(buttonHeight)))
+                    m_Manager.SetTier(QualityTier.Low);
+                if (GUILayout.Button("Balanced", GUILayout.Height(buttonHeight)))
+                    m_Manager.SetTier(QualityTier.Balanced);
+                if (GUILayout.Button("High", GUILayout.Height(buttonHeight)))
+                    m_Manager.SetTier(QualityTier.High);
+                GUILayout.EndHorizontal();
+            }
 
             GUILayout.EndArea();
+        }
+
+        void BuildLines(OverlaySettings settings)
+        {
+            m_Lines.Clear();
+
+            float budget = m_Manager.FrameBudgetMs;
+
+            if (settings.Has(OverlayFields.Tier))
+                m_Lines.Add($"Tier          {m_Manager.CurrentTier}  (level {m_Manager.Current.unityQualityLevel})");
+
+            if (settings.Has(OverlayFields.TargetFrameRate))
+                m_Lines.Add($"Target        {m_Manager.Current.targetFrameRate} fps");
+
+            if (settings.Has(OverlayFields.FrameBudget))
+                m_Lines.Add($"Budget        {budget:F2} ms");
+
+            if (settings.Has(OverlayFields.CurrentFps))
+                m_Lines.Add($"Now           {m_Manager.CurrentFps:F1} fps");
+
+            if (settings.Has(OverlayFields.AverageMs))
+                m_Lines.Add($"Avg           {m_Manager.LastAvgMs:F2} ms");
+
+            if (settings.Has(OverlayFields.P95Ms))
+                m_Lines.Add($"p95           {m_Manager.LastP95Ms:F2} ms   {(m_Manager.LastP95Ms > budget ? "OVER" : "ok")}");
+
+            if (settings.Has(OverlayFields.RenderScale))
+                m_Lines.Add($"Render scale  {m_Manager.CurrentRenderScale:F2}" +
+                            $"  ({m_Manager.Current.minRenderScale:F2} - {m_Manager.Current.maxRenderScale:F2})");
+
+            if (settings.Has(OverlayFields.Thermal))
+            {
+                string headroom = float.IsNaN(m_Manager.ThermalHeadroom)
+                    ? "n/a"
+                    : m_Manager.ThermalHeadroom.ToString("F2");
+                m_Lines.Add($"Thermal       {m_Manager.ThermalLevel}   headroom {headroom}");
+            }
+
+            if (settings.Has(OverlayFields.HeatResponse))
+            {
+                string heat = m_Manager.IsThermalThrottled ? "SEVERE - pinned"
+                    : m_Manager.IsSheddingHeat ? "WARM - shedding"
+                    : m_Manager.IsDeviceWarm ? "WARM - holding"
+                    : "cool";
+                m_Lines.Add($"Heat          {heat}");
+            }
+
+            if (settings.Has(OverlayFields.OscillationLock))
+            {
+                string state = m_Manager.IsRenderScaleLockedForSession ? "locked for session"
+                    : m_Manager.IsRenderScaleLocked ? "locked (temporary)"
+                    : "free";
+                m_Lines.Add($"Step up       {state}");
+            }
+
+            if (settings.Has(OverlayFields.Adjustments))
+                m_Lines.Add($"Adjustments   {(m_Manager.AllowAdjustments ? "allowed" : "blocked by gameplay")}");
+
+            if (settings.Has(OverlayFields.Device))
+            {
+                m_Lines.Add($"GPU           {SystemInfo.graphicsDeviceName}");
+                m_Lines.Add($"API           {SystemInfo.graphicsDeviceType}  sm{SystemInfo.graphicsShaderLevel}");
+            }
+        }
+
+        /// <summary>
+        /// Measures the built lines and returns the panel rect for the chosen anchor.
+        /// </summary>
+        /// <param name="settings">Current overlay settings.</param>
+        /// <returns>The rect to draw the panel in.</returns>
+        Rect Measure(OverlaySettings settings)
+        {
+            float width = 0f;
+            var content = new GUIContent();
+
+            for (int i = 0; i < m_Lines.Count; i++)
+            {
+                content.text = m_Lines[i];
+                float lineWidth = m_Text.CalcSize(content).x;
+                if (lineWidth > width)
+                    width = lineWidth;
+            }
+
+            float lineHeight = m_Text.lineHeight > 0f ? m_Text.lineHeight : m_Text.fontSize * 1.2f;
+            float height = m_Lines.Count * lineHeight;
+
+            if (settings.showTierButtons)
+            {
+                height += m_Text.fontSize * 2.2f + m_Text.fontSize * 0.4f;
+                float buttonRowWidth = m_Text.fontSize * 14f;
+                if (buttonRowWidth > width)
+                    width = buttonRowWidth;
+            }
+
+            RectOffset padding = m_Panel.padding;
+            width += padding.left + padding.right;
+            height += padding.top + padding.bottom;
+
+            // Never let the panel run off a phone screen, whatever the font scale is.
+            width = Mathf.Min(width, Screen.width - settings.margin * 2f);
+            height = Mathf.Min(height, Screen.height - settings.margin * 2f);
+
+            return new Rect(AnchorPosition(settings, width, height), new Vector2(width, height));
+        }
+
+        static Vector2 AnchorPosition(OverlaySettings settings, float width, float height)
+        {
+            float margin = settings.margin;
+            float x;
+            float y;
+
+            switch (settings.anchor)
+            {
+                case OverlayAnchor.TopCenter:
+                case OverlayAnchor.MiddleCenter:
+                case OverlayAnchor.BottomCenter:
+                    x = (Screen.width - width) * 0.5f;
+                    break;
+                case OverlayAnchor.TopRight:
+                case OverlayAnchor.MiddleRight:
+                case OverlayAnchor.BottomRight:
+                    x = Screen.width - width - margin;
+                    break;
+                default:
+                    x = margin;
+                    break;
+            }
+
+            switch (settings.anchor)
+            {
+                case OverlayAnchor.MiddleLeft:
+                case OverlayAnchor.MiddleCenter:
+                case OverlayAnchor.MiddleRight:
+                    y = (Screen.height - height) * 0.5f;
+                    break;
+                case OverlayAnchor.BottomLeft:
+                case OverlayAnchor.BottomCenter:
+                case OverlayAnchor.BottomRight:
+                    y = Screen.height - height - margin;
+                    break;
+                default:
+                    y = margin;
+                    break;
+            }
+
+            return new Vector2(x, y);
         }
 
         void HandleToggleInput()
@@ -126,13 +267,18 @@ namespace MobileAdjustGameQuality
                 return;
             }
 
-            // Four taps in the top-right corner, for devices without a keyboard. The hit
-            // area is an invisible IMGUI region rather than a raw touch read so it works
-            // with either input backend and does not fight the game's own UI.
+            // Four taps in the top-right corner, for devices without a keyboard. The hit area
+            // is an invisible IMGUI region rather than a raw touch read so it works with
+            // either input backend and does not fight the game's own UI.
             if (e.type != EventType.MouseDown)
                 return;
 
-            var corner = new Rect(Screen.width - k_CornerSize, 0f, k_CornerSize, k_CornerSize);
+            // Skip when the panel itself is under the tap, or anchoring the overlay to the
+            // top right would make its buttons unclickable.
+            if (m_Visible && m_PanelRect.Contains(e.mousePosition))
+                return;
+
+            var corner = new Rect(Screen.width - k_TapCornerSize, 0f, k_TapCornerSize, k_TapCornerSize);
             if (!corner.Contains(e.mousePosition))
                 return;
 
@@ -151,34 +297,48 @@ namespace MobileAdjustGameQuality
             e.Use();
         }
 
-        void EnsureStyles()
+        void EnsureStyles(OverlaySettings settings)
         {
-            if (m_Panel != null)
-                return;
+            // Scale with DPI so the overlay stays legible on a phone instead of rendering as
+            // a row of ants next to a 3x UI, then apply the user's multiplier on top.
+            int fontSize = Mathf.Max(10, Mathf.RoundToInt(
+                (Screen.dpi > 0f ? Screen.dpi / 18f : 14f) * settings.scale));
 
-            m_PanelTexture = new Texture2D(1, 1, TextureFormat.RGBA32, false)
+            if (m_Text == null)
             {
-                hideFlags = HideFlags.HideAndDontSave
-            };
-            m_PanelTexture.SetPixel(0, 0, new Color(0f, 0f, 0f, 0.78f));
-            m_PanelTexture.Apply();
+                m_Text = new GUIStyle(GUI.skin.label)
+                {
+                    richText = false,
+                    wordWrap = false
+                };
+                m_Text.normal.textColor = Color.white;
+            }
 
-            m_Panel = new GUIStyle(GUI.skin.box)
-            {
-                padding = new RectOffset(12, 12, 10, 10)
-            };
-            m_Panel.normal.background = m_PanelTexture;
+            m_Text.fontSize = fontSize;
 
-            // Scale with DPI so the overlay stays legible on a phone instead of rendering
-            // as a row of ants next to a 3x UI.
-            int fontSize = Mathf.Max(12, Mathf.RoundToInt(Screen.dpi > 0f ? Screen.dpi / 18f : 14f));
-            m_Text = new GUIStyle(GUI.skin.label)
+            if (m_Panel == null)
             {
-                fontSize = fontSize,
-                richText = false,
-                wordWrap = false
-            };
-            m_Text.normal.textColor = Color.white;
+                m_Panel = new GUIStyle(GUI.skin.box)
+                {
+                    padding = new RectOffset(12, 12, 10, 10)
+                };
+            }
+
+            if (m_PanelTexture == null || !Mathf.Approximately(m_TextureOpacity, settings.backgroundOpacity))
+            {
+                if (m_PanelTexture != null)
+                    Destroy(m_PanelTexture);
+
+                m_PanelTexture = new Texture2D(1, 1, TextureFormat.RGBA32, false)
+                {
+                    hideFlags = HideFlags.HideAndDontSave
+                };
+                m_PanelTexture.SetPixel(0, 0, new Color(0f, 0f, 0f, settings.backgroundOpacity));
+                m_PanelTexture.Apply();
+
+                m_Panel.normal.background = m_PanelTexture;
+                m_TextureOpacity = settings.backgroundOpacity;
+            }
         }
     }
 }

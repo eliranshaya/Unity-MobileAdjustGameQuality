@@ -47,6 +47,11 @@ namespace MobileAdjustGameQuality
         [SerializeField]
         AdaptiveSettings adaptive = new AdaptiveSettings();
 
+        [Tooltip("On-screen debug readout. Needs a DEVELOPER_MODE build - in a release build " +
+                 "the overlay is compiled out and none of this has any effect.")]
+        [SerializeField]
+        OverlaySettings overlay = new OverlaySettings();
+
         [Tooltip("Forces a tier at startup, ignoring saved preferences and device detection. " +
                  "-1 disables. Only honoured in DEVELOPER_MODE builds.")]
         [SerializeField]
@@ -93,6 +98,19 @@ namespace MobileAdjustGameQuality
 
         /// <summary>The most recent mean frame time, in milliseconds. Reporting only.</summary>
         public float LastAvgMs { get; private set; }
+
+        /// <summary>
+        /// Smoothed frames per second, derived from the mean frame time over the sampling
+        /// window. Reporting only - nothing decides anything on this, for the reason in
+        /// <see cref="LastP95Ms"/>'s docs.
+        /// </summary>
+        public float CurrentFps => LastAvgMs > 0f ? 1000f / LastAvgMs : 0f;
+
+        /// <summary>
+        /// Debug overlay configuration. Always serialized, but only acted on in a
+        /// <c>DEVELOPER_MODE</c> build.
+        /// </summary>
+        public OverlaySettings Overlay => overlay;
 
         /// <summary>The most recent thermal status reported by the OS.</summary>
         public ThermalLevel ThermalLevel => m_Thermal != null ? m_Thermal.Level : ThermalLevel.Unknown;
@@ -186,7 +204,9 @@ namespace MobileAdjustGameQuality
             // serialized reference to a class that is compiled out leaves a permanent
             // "The referenced script on this Behaviour is missing!" warning on the
             // GameObject in every player build.
-            if (GetComponent<QualityDebugOverlay>() == null)
+            // Not added at all when the checkbox is off, so an overlay you are not looking at
+            // costs no OnGUI call rather than an early return inside one.
+            if (overlay != null && overlay.show && GetComponent<QualityDebugOverlay>() == null)
                 gameObject.AddComponent<QualityDebugOverlay>();
 #endif
         }
@@ -195,8 +215,7 @@ namespace MobileAdjustGameQuality
         {
             m_Thermal?.Dispose();
 
-            if (Instance == this)
-                Instance = null;
+            if (Instance == this) Instance = null;
         }
 
         /// <summary>
@@ -216,15 +235,13 @@ namespace MobileAdjustGameQuality
 
         void OnApplicationPause(bool paused)
         {
-            if (paused)
-                return;
+            if (paused) return;
 
             // Several Android OEMs reset the frame cap and re-enable vSync when the app
             // returns to the foreground, which shows up in bug reports as "the game runs at
             // 60 for a few minutes and then goes back to 30".
             QualitySettings.vSyncCount = 0;
-            if (m_ActiveFrameRate > 0)
-                Application.targetFrameRate = m_ActiveFrameRate;
+            if (m_ActiveFrameRate > 0) Application.targetFrameRate = m_ActiveFrameRate;
 
             // The device may have cooled in a pocket or heated in one; either way the
             // measurements from before the pause describe a moment that is over.
@@ -265,8 +282,7 @@ namespace MobileAdjustGameQuality
                     m_EvaluateWait.Reset();
                     yield return m_EvaluateWait;
 
-                    if (m_RestartRequested)
-                        break;
+                    if (m_RestartRequested) break;
 
                     Tick();
                 }
@@ -289,8 +305,7 @@ namespace MobileAdjustGameQuality
                 return;
             }
 
-            if (!m_Sampler.TryGetStatistics(adaptive.MinimumSamplesToDecide, out float p95, out float average))
-                return;
+            if (!m_Sampler.TryGetStatistics(adaptive.MinimumSamplesToDecide, out float p95, out float average)) return;
 
             LastP95Ms = p95;
             LastAvgMs = average;
@@ -300,18 +315,15 @@ namespace MobileAdjustGameQuality
 
             // Gameplay veto covers everything, thermal response included. A resolution drop
             // in the middle of a boss fight is worse than four more warm seconds.
-            if (!AllowAdjustments)
-                return;
+            if (!AllowAdjustments) return;
 
-            if (HandleThermal(now, p95 > budget * adaptive.overBudgetFactor))
-                return;
+            if (HandleThermal(now, p95 > budget * adaptive.overBudgetFactor)) return;
 
             TierSettings settings = Current;
-            AdaptiveScaler.Step step = m_Scaler.Decide(
-                now, CurrentRenderScale, settings.minRenderScale, settings.maxRenderScale, m_Thermal.IsWarm);
+            AdaptiveScaler.Step step = m_Scaler.Decide(now, CurrentRenderScale, settings.minRenderScale,
+                settings.maxRenderScale, m_Thermal.IsWarm);
 
-            if (step == AdaptiveScaler.Step.Hold)
-                return;
+            if (step == AdaptiveScaler.Step.Hold) return;
 
             float delta = step == AdaptiveScaler.Step.Down ? -adaptive.stepSize : adaptive.stepSize;
             StepRenderScale(delta, $"p95 {p95:F1}ms vs {budget:F1}ms budget");
@@ -391,8 +403,7 @@ namespace MobileAdjustGameQuality
             {
                 m_IsSheddingHeat = true;
 
-                if (m_Scaler.DecideWarmResponse(now, CurrentRenderScale, Current.minRenderScale) ==
-                    AdaptiveScaler.Step.Down)
+                if (m_Scaler.DecideWarmResponse(now, CurrentRenderScale, Current.minRenderScale) == AdaptiveScaler.Step.Down)
                 {
                     StepRenderScale(-adaptive.stepSize,
                         $"device warm ({DescribeThermal()}), shedding load before the OS throttles");
@@ -416,9 +427,7 @@ namespace MobileAdjustGameQuality
         string DescribeThermal()
         {
             string level = m_Thermal.Level == ThermalLevel.Unknown ? "status n/a" : m_Thermal.Level.ToString();
-            return float.IsNaN(m_Thermal.Headroom)
-                ? level
-                : $"{level}, headroom {m_Thermal.Headroom:F2}";
+            return float.IsNaN(m_Thermal.Headroom) ? level : $"{level}, headroom {m_Thermal.Headroom:F2}";
         }
 
         void StepRenderScale(float delta, string reason)
@@ -427,8 +436,7 @@ namespace MobileAdjustGameQuality
             SetRenderScale(before + delta);
             float after = CurrentRenderScale;
 
-            if (Mathf.Approximately(before, after))
-                return;
+            if (Mathf.Approximately(before, after)) return;
 
             QualityDevLog.Log($"Render scale {before:F2} -> {after:F2} ({reason}).");
             OnRenderScaleChanged?.Invoke(after);
@@ -461,8 +469,7 @@ namespace MobileAdjustGameQuality
             tier = (QualityTier)index;
 
             PlayerPrefs.SetInt(k_TierKey, index);
-            if (isPlayerChoice)
-                PlayerPrefs.SetInt(k_UserSetKey, 1);
+            if (isPlayerChoice) PlayerPrefs.SetInt(k_UserSetKey, 1);
             PlayerPrefs.Save();
 
             if (tier == CurrentTier && m_UrpAsset != null)
@@ -484,8 +491,7 @@ namespace MobileAdjustGameQuality
             TierSettings settings = Current;
             float clamped = Mathf.Clamp(scale, settings.minRenderScale, settings.maxRenderScale);
 
-            if (m_UrpAsset == null)
-                m_UrpAsset = ResolveUrpAsset();
+            if (m_UrpAsset == null) m_UrpAsset = ResolveUrpAsset();
 
             if (m_UrpAsset == null)
             {
@@ -495,8 +501,7 @@ namespace MobileAdjustGameQuality
                 return;
             }
 
-            if (Mathf.Approximately(clamped, CurrentRenderScale))
-                return;
+            if (Mathf.Approximately(clamped, CurrentRenderScale)) return;
 
             CurrentRenderScale = clamped;
             m_UrpAsset.renderScale = clamped;
@@ -580,9 +585,8 @@ namespace MobileAdjustGameQuality
 
             if (m_UrpAsset == null)
             {
-                QualityDevLog.FatalConfigError(
-                    "No UniversalRenderPipelineAsset found after switching quality level. " +
-                    "The game will render with whatever pipeline is active and quality control is disabled.");
+                QualityDevLog.FatalConfigError("No UniversalRenderPipelineAsset found after switching quality level. " +
+                                               "The game will render with whatever pipeline is active and quality control is disabled.");
             }
             else
             {
@@ -599,10 +603,9 @@ namespace MobileAdjustGameQuality
             m_IsSheddingHeat = false;
             m_RestartRequested = true;
 
-            QualityDevLog.Log(
-                $"Applied tier {tier} | qualityLevel={settings.unityQualityLevel} " +
-                $"fps={settings.targetFrameRate} renderScale={CurrentRenderScale:F2} " +
-                $"urp='{(m_UrpAsset != null ? m_UrpAsset.name : "<none>")}'");
+            QualityDevLog.Log($"Applied tier {tier} | qualityLevel={settings.unityQualityLevel} " +
+                              $"fps={settings.targetFrameRate} renderScale={CurrentRenderScale:F2} " +
+                              $"urp='{(m_UrpAsset != null ? m_UrpAsset.name : "<none>")}'");
 
             OnTierChanged?.Invoke(tier);
         }
@@ -612,8 +615,7 @@ namespace MobileAdjustGameQuality
             // The quality level's override wins when one is assigned; otherwise the
             // project-wide default is what is actually rendering.
             var asset = QualitySettings.renderPipeline as UniversalRenderPipelineAsset;
-            if (asset != null)
-                return asset;
+            if (asset != null) return asset;
 
             return GraphicsSettings.defaultRenderPipeline as UniversalRenderPipelineAsset;
         }
@@ -629,8 +631,7 @@ namespace MobileAdjustGameQuality
 
             for (int i = 0; i < tiers.Length; i++)
             {
-                if (tiers[i] != null)
-                    continue;
+                if (tiers[i] != null) continue;
 
                 QualityDevLog.Warn($"Tier {i} was null; rebuilding it with defaults.");
                 tiers[i] = CreateDefaultTiers()[i];
