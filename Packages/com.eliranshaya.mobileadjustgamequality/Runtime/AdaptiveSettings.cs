@@ -59,6 +59,14 @@ namespace MobileAdjustGameQuality
         [Range(0.01f, 0.25f)]
         public float stepSize = 0.05f;
 
+        [Header("Heat response")]
+        [Tooltip("While the device reports itself warm, step the render scale down this often " +
+                 "until it reaches the tier minimum - regardless of whether frame times are " +
+                 "still inside budget. Shedding load early is what keeps the device from " +
+                 "reaching the point where the OS throttles it for us.")]
+        [Range(1f, 120f)]
+        public float warmStepIntervalSeconds = 10f;
+
         [Header("Oscillation guard")]
         [Tooltip("How many consecutive down-then-up cycles are allowed before upward steps " +
                  "are locked out. A device that keeps flip-flopping is a device that has no " +

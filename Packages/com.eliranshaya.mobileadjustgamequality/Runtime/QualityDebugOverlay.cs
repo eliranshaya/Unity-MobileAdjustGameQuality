@@ -90,7 +90,12 @@ namespace MobileAdjustGameQuality
                             $"{(m_Manager.IsThermalThrottled ? "  [thermal fallback active]" : string.Empty)}", m_Text);
 
             string headroom = float.IsNaN(m_Manager.ThermalHeadroom) ? "n/a" : m_Manager.ThermalHeadroom.ToString("F2");
+            string heatState = m_Manager.IsThermalThrottled ? "SEVERE - pinned"
+                : m_Manager.IsSheddingHeat ? "WARM - shedding"
+                : m_Manager.IsDeviceWarm ? "WARM - holding"
+                : "cool";
             GUILayout.Label($"Thermal       {m_Manager.ThermalLevel}   headroom {headroom}", m_Text);
+            GUILayout.Label($"Heat response {heatState}", m_Text);
 
             GUILayout.Label($"GPU           {SystemInfo.graphicsDeviceName}", m_Text);
             GUILayout.Label($"API           {SystemInfo.graphicsDeviceType}  sm{SystemInfo.graphicsShaderLevel}", m_Text);

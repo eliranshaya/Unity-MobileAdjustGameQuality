@@ -110,15 +110,12 @@ namespace MobileAdjustGameQuality.EditorTools
             internal int antiAliasing;
         }
 
-        /// <summary>The values written into the prefab's tier array.</summary>
-        internal class RuntimePreset
-        {
-            internal int targetFrameRate;
-            internal float baseRenderScale;
-            internal float minRenderScale;
-            internal float maxRenderScale;
-            internal int thermalFallbackFrameRate;
-        }
+        // There is deliberately no runtime tier preset here. The prefab's targetFrameRate,
+        // render scale range and thermal fallback live in exactly one place -
+        // MobileQualityManager.CreateDefaultTiers() - and the prefab picks them up because
+        // it is built from a fresh AddComponent, which runs that field initializer. A copy
+        // of those numbers in this assembly would win over the component's own defaults and
+        // make editing them look like it did nothing.
 
         static readonly UrpPreset[] s_Urp =
         {
@@ -314,34 +311,6 @@ namespace MobileAdjustGameQuality.EditorTools
             }
         };
 
-        static readonly RuntimePreset[] s_Runtime =
-        {
-            new RuntimePreset
-            {
-                targetFrameRate = 30,
-                baseRenderScale = 0.75f,
-                minRenderScale = 0.60f,
-                maxRenderScale = 0.75f,
-                thermalFallbackFrameRate = 0
-            },
-            new RuntimePreset
-            {
-                targetFrameRate = 60,
-                baseRenderScale = 0.85f,
-                minRenderScale = 0.70f,
-                maxRenderScale = 0.85f,
-                thermalFallbackFrameRate = 30
-            },
-            new RuntimePreset
-            {
-                targetFrameRate = 60,
-                baseRenderScale = 1.00f,
-                minRenderScale = 0.80f,
-                maxRenderScale = 1.00f,
-                thermalFallbackFrameRate = 30
-            }
-        };
-
         /// <summary>URP asset preset for a tier.</summary>
         /// <param name="tier">Tier index, 0-2.</param>
         /// <returns>The preset.</returns>
@@ -356,11 +325,6 @@ namespace MobileAdjustGameQuality.EditorTools
         /// <param name="tier">Tier index, 0-2.</param>
         /// <returns>The preset.</returns>
         internal static QualityLevelPreset QualityLevel(int tier) => s_QualityLevel[tier];
-
-        /// <summary>Runtime tier settings preset for a tier.</summary>
-        /// <param name="tier">Tier index, 0-2.</param>
-        /// <returns>The preset.</returns>
-        internal static RuntimePreset Runtime(int tier) => s_Runtime[tier];
 
         /// <summary>
         /// The installed URP package version string, or <c>null</c> if it cannot be read.

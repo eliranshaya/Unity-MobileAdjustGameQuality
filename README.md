@@ -36,7 +36,7 @@ https://github.com/eliranshaya/Unity-MobileAdjustGameQuality.git?path=/Packages/
 To lock to a specific version, append the tag:
 
 ```
-https://github.com/eliranshaya/Unity-MobileAdjustGameQuality.git?path=/Packages/com.eliranshaya.mobileadjustgamequality#v2.0.0
+https://github.com/eliranshaya/Unity-MobileAdjustGameQuality.git?path=/Packages/com.eliranshaya.mobileadjustgamequality#v2.1.0
 ```
 
 ---
@@ -69,7 +69,7 @@ checkbox:
 
 | | Low | Balanced | High |
 | --- | --- | --- | --- |
-| Render scale | 0.75 | 0.85 | 1.00 |
+| Render scale at boot | 0.65 | 0.75 | 0.85 |
 | Target FPS | 30 | 60 | 60 |
 | Main light shadows | off | 512 | 1024 |
 | Additional lights | 1, per-vertex | 2, per-vertex | 4, per-pixel |
@@ -117,9 +117,16 @@ target reallocation every time and gains nothing. After two consecutive down-the
 the next upward step is refused and upward steps lock for 5 minutes; if the pattern returns
 after that, the lock is permanent for the session. Downward steps are never blocked.
 
-**Thermal awareness.** When Android reports severe throttling, the render scale is pinned to
-the tier minimum first, and the frame cap is only dropped if that was not enough — halving
-the frame rate is the most noticeable change a game can make, so it is the last resort.
+**Heat response, three bands.** Cool: normal adaptation. **Warm** — Android status ≥ 1 or
+headroom ≥ 0.85, iOS `fair` — the render scale steps down every 10 s regardless of frame
+times, because waiting for frames to drop means waiting for the OS to have already throttled
+the chip. **Severe** — render scale pinned straight to the tier minimum, and only if that
+was not enough does the frame cap drop, since halving the frame rate is the most noticeable
+change a game can make.
+
+Works in real builds on both platforms: Android through `PowerManager` over JNI with no
+permission or plugin, iOS through `NSProcessInfo.thermalState` via a bundled `.mm` that a
+post-process build step verifies reached the Xcode project. You never open Xcode.
 
 ---
 

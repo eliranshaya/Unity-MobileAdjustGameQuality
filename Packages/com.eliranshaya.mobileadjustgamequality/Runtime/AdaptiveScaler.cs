@@ -40,6 +40,7 @@ namespace MobileAdjustGameQuality
         bool m_HasLockedOnce;
         bool m_SessionLocked;
         float m_UpLockUntil;
+        float m_WarmStepAllowedAt;
 
         /// <summary>Creates a scaler bound to a settings block.</summary>
         /// <param name="settings">Tuning constants. Read live, so inspector edits apply.</param>
@@ -118,6 +119,57 @@ namespace MobileAdjustGameQuality
                 m_OverForSeconds = 0f;
                 m_UnderForSeconds = 0f;
             }
+        }
+
+        /// <summary>
+        /// Decides whether to shed load because the device reports itself warm.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// This is a heat response, not a performance response, and that is why it ignores
+        /// frame times entirely. Waiting for p95 to go over budget means waiting for the OS
+        /// to have already throttled the chip - at which point the frames are gone and the
+        /// only thing left to do is react. Stepping down while there is still headroom is
+        /// what keeps a session from getting there at all.
+        /// </para>
+        /// <para>
+        /// It steps rather than jumping to the minimum: warm is a warning, not an
+        /// emergency. <see cref="MobileQualityManager"/> handles the emergency case
+        /// separately by pinning straight to the tier minimum.
+        /// </para>
+        /// </remarks>
+        /// <param name="now">Current unscaled time, in seconds.</param>
+        /// <param name="currentScale">Render scale in effect right now.</param>
+        /// <param name="minScale">Lowest scale this tier allows.</param>
+        /// <returns><see cref="Step.Down"/> when a step is due, otherwise <see cref="Step.Hold"/>.</returns>
+        public Step DecideWarmResponse(float now, float currentScale, float minScale)
+        {
+            if (currentScale <= minScale)
+                return Step.Hold;
+
+            if (now < m_WarmStepAllowedAt)
+                return Step.Hold;
+
+            m_WarmStepAllowedAt = now + m_Settings.warmStepIntervalSeconds;
+
+            // Silence the frame-time loop for a while too. It is looking at the same
+            // symptom from the other side, and two systems stepping down independently
+            // would overshoot straight to the minimum in a couple of seconds.
+            m_CooldownUntil = now + m_Settings.cooldownAfterDownSeconds;
+            m_OverForSeconds = 0f;
+            m_UnderForSeconds = 0f;
+
+            RegisterStep(Step.Down);
+            return Step.Down;
+        }
+
+        /// <summary>
+        /// Tells the scaler the device is no longer warm, so the next warm episode acts
+        /// immediately instead of waiting out an interval left over from the last one.
+        /// </summary>
+        public void NotifyCool()
+        {
+            m_WarmStepAllowedAt = 0f;
         }
 
         /// <summary>

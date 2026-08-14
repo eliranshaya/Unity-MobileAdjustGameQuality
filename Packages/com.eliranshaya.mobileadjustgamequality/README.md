@@ -34,7 +34,7 @@ https://github.com/eliranshaya/Unity-MobileAdjustGameQuality.git?path=/Packages/
 To lock to a specific version, append the tag:
 
 ```
-https://github.com/eliranshaya/Unity-MobileAdjustGameQuality.git?path=/Packages/com.eliranshaya.mobileadjustgamequality#v2.0.0
+https://github.com/eliranshaya/Unity-MobileAdjustGameQuality.git?path=/Packages/com.eliranshaya.mobileadjustgamequality#v2.1.0
 ```
 
 ---
@@ -102,9 +102,9 @@ are. The confirmation dialog lists every item by name first.
 
 | | Low | Balanced | High |
 | --- | --- | --- | --- |
-| Render scale | 0.75 | 0.85 | 1.00 |
+| Render scale at boot | 0.65 | 0.75 | 0.85 |
 | Target FPS | 30 | 60 | 60 |
-| Render scale range | 0.60 – 0.75 | 0.70 – 0.85 | 0.80 – 1.00 |
+| Render scale range | 0.60 – 0.70 | 0.70 – 0.80 | 0.80 – 0.90 |
 | Main light shadows | off | 512 | 1024 |
 | Additional lights | 1, per-vertex | 2, per-vertex | 4, per-pixel |
 | Additional light shadows | off | off | 512 |
@@ -164,7 +164,9 @@ Read what the loop is seeing:
 float p95     = quality.LastP95Ms;              // 95th percentile frame time
 float budget  = quality.FrameBudgetMs;          // 16.67 at 60 FPS
 float scale   = quality.CurrentRenderScale;
-bool  hot     = quality.IsThermalThrottled;
+bool  hot     = quality.IsThermalThrottled;   // severe: pinned to minimum
+bool  warm    = quality.IsDeviceWarm;         // OS says do not raise quality
+bool  shed    = quality.IsSheddingHeat;       // stepping down because of heat
 bool  locked  = quality.IsRenderScaleLocked;    // oscillation guard engaged
 ```
 
@@ -182,9 +184,11 @@ One MonoBehaviour, `MobileQualityManager`. Everything else is a plain class it o
 | `MobileQualityManager` | MonoBehaviour | The only component. Owns the lifetime and the coroutines. |
 | `FrameTimeSampler` | plain | Fixed ring buffer, p95 and mean, zero allocation. |
 | `AdaptiveScaler` | plain | The whole decision policy, including the oscillation guard. |
-| `ThermalSensor` | plain, `IDisposable` | Android JNI, wrapped in try/catch. |
+| `ThermalSensor` | plain, `IDisposable` | Android JNI and the iOS plugin call, both wrapped in try/catch. |
 | `TierSettings` | serializable | Per-tier data. |
 | `AdaptiveSettings` | serializable | Tuning constants, one inspector foldout. |
+| `MobileQualityThermalNative.mm` | native, iOS | Six lines bridging `NSProcessInfo.thermalState`. |
+| `MobileQualityThermalIOSPostProcess` | editor, iOS only | Verifies the `.mm` reached the Xcode project. |
 
 Three components would mean three execution orders, three lifetimes and three things that
 have to agree with each other. None of the three needed a transform or its own `Update`.
@@ -243,24 +247,68 @@ is a device settling somewhere, not a device wobbling.
 call is wrapped in try/catch because several OEM ROMs throw, and one failure disables
 thermal input rather than retrying forever.
 
-There is **no temperature in degrees** anywhere in this, and there cannot be — Android does
-not expose one to apps, because the temperature at which one phone throttles is meaningless
-on another. What you get instead is the OS's own verdict:
+There is **no temperature in degrees** anywhere in this, and there cannot be — neither OS
+exposes one to apps, because the temperature at which one phone throttles is meaningless on
+another. What you get instead is the OS's own verdict.
 
-| Signal | Value | Meaning | What the package does |
+### The heat response has three bands
+
+| Band | Android | iOS | What happens |
 | --- | --- | --- | --- |
-| `getCurrentThermalStatus()` | 0 NONE | no throttling | normal adaptation |
-| | 1 LIGHT | throttling started | **stop raising quality** |
-| | 2 MODERATE | frame times drifting | stop raising quality |
-| | 3 SEVERE | actively clocking down | **give quality back** |
-| | 4 CRITICAL | OS out of options | give quality back |
-| `getThermalHeadroom(10)` | < 0.85 | headroom left | normal adaptation |
-| | ≥ 0.85 | throttling forecast | **stop raising quality** |
-| | ≥ 1.00 | throttling now | **give quality back** |
+| **cool** | status 0 and headroom < 0.85 | nominal | Normal frame-time adaptation, up and down. |
+| **warm** | status ≥ 1, or headroom ≥ 0.85 | fair | **Render scale steps down every 10 s** until it reaches the tier minimum — regardless of frame times. Upward steps blocked. |
+| **severe** | status ≥ 3, or headroom ≥ 1.0 | serious / critical | Render scale **pinned straight to the tier minimum**. If p95 is still over budget, the frame cap drops to `thermalFallbackFrameRate` — last, because halving the frame rate is the most noticeable change a game can make. |
 
-Headroom is the better of the two because it is a forecast: it moves *before* the status
-does, which buys the loop a few seconds to act on its own terms instead of reacting after
-the OS has already taken the performance away.
+The warm band is the one that matters most, and it is deliberately not conditional on frame
+times. Waiting for p95 to go over budget means waiting for the OS to have already throttled
+the chip — at which point the frames are gone and there is nothing left to do but react.
+Shedding a step of render scale while there is still headroom is what keeps a session from
+getting there at all.
+
+Cooling down unwinds in reverse: frame cap first, then the pin releases, then the render
+scale climbs back in 0.05 steps. Going from 0.60 back to 0.85 takes roughly three and a half
+minutes on purpose — fast recovery is how you end up warm again a minute later.
+
+### Signal reference
+
+| Signal | Value | Meaning | Band |
+| --- | --- | --- | --- |
+| `getCurrentThermalStatus()` | 0 NONE | no throttling | cool |
+| | 1 LIGHT | throttling started | warm |
+| | 2 MODERATE | frame times drifting | warm |
+| | 3 SEVERE | actively clocking down | severe |
+| | 4 CRITICAL | OS out of options | severe |
+| `getThermalHeadroom(10)` | < 0.85 | headroom left | cool |
+| | ≥ 0.85 | throttling forecast | warm |
+| | ≥ 1.00 | throttling now | severe |
+| `NSProcessInfo.thermalState` | 0 nominal | no pressure | cool |
+| | 1 fair | slightly elevated | warm |
+| | 2 serious | reduce work now | severe |
+| | 3 critical | cool down immediately | severe |
+
+Headroom is the most useful of the three because it is a **forecast normalised to the
+device's own throttling point** — 1.0 means "the temperature at which *this* phone
+throttles", so 0.85 reads as "85% of the way to your limit" on any handset without a lookup
+table. It also moves *before* the status does, which is what buys the loop time to act on
+its own terms.
+
+### Platform support
+
+| | Status | Forecast | How |
+| --- | --- | --- | --- |
+| **Android** | ✔ API 29+ | ✔ API 30+ | `PowerManager` over JNI. No permission, no plugin, works in a plain build. |
+| **iOS** | ✔ iOS 11+ | ✘ Apple exposes none | `NSProcessInfo.thermalState` through the bundled `MobileQualityThermalNative.mm`. |
+| **Everything else** | ✘ | ✘ | `Unknown`, and adaptation runs from frame times alone. |
+
+The iOS plugin ships inside the package at `Runtime/Plugins/iOS/`, with its `.meta` pinned
+so Unity compiles it into UnityFramework. `MobileQualityThermalIOSPostProcess` then runs on
+every iOS build, checks the `.mm` actually reached the generated Xcode project, and adds it
+to UnityFramework's Compile Sources if a stale package cache dropped it. Both outcomes are
+logged — a silently missing plugin looks exactly like a working one until you notice thermal
+never reports anything.
+
+No framework is linked, because the plugin only touches `NSProcessInfo` and Foundation is
+always linked into UnityFramework. You never need to open Xcode.
 
 When the device goes severe the response is ordered, and the order is the point: **first**
 the render scale is pinned to the tier minimum; **only** if that is still not enough does the

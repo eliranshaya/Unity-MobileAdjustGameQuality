@@ -1,0 +1,23 @@
+{
+    "name": "MobileAdjustGameQuality.Editor.iOS",
+    "rootNamespace": "MobileAdjustGameQuality.EditorTools",
+    "references": [
+        "MobileAdjustGameQuality.Runtime",
+        "MobileAdjustGameQuality.Editor"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": true,
+    "precompiledReferences": [
+        "UnityEditor.iOS.Extensions.Xcode.dll"
+    ],
+    "autoReferenced": true,
+    "defineConstraints": [
+        "UNITY_IOS"
+    ],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

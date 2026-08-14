@@ -71,6 +71,7 @@ namespace MobileAdjustGameQuality
         bool m_RestartRequested;
         bool m_ThermalPinned;
         bool m_ThermalFrameRateDropped;
+        bool m_IsSheddingHeat;
 
         /// <summary>The live instance, or <c>null</c> before the prefab has awoken.</summary>
         public static MobileQualityManager Instance { get; private set; }
@@ -99,8 +100,19 @@ namespace MobileAdjustGameQuality
         /// <summary>The most recent thermal headroom forecast, or <c>NaN</c> if unavailable.</summary>
         public float ThermalHeadroom => m_Thermal != null ? m_Thermal.Headroom : float.NaN;
 
-        /// <summary>True while the thermal fallback has taken over from normal adaptation.</summary>
+        /// <summary>True while the severe-heat fallback has taken over from normal adaptation.</summary>
         public bool IsThermalThrottled => m_ThermalPinned || m_ThermalFrameRateDropped;
+
+        /// <summary>
+        /// True when the OS reports the device warm enough that quality must not be raised.
+        /// </summary>
+        public bool IsDeviceWarm => m_Thermal != null && m_Thermal.IsWarm;
+
+        /// <summary>
+        /// True while the render scale is being stepped down because of heat rather than
+        /// because of frame times.
+        /// </summary>
+        public bool IsSheddingHeat => m_IsSheddingHeat;
 
         /// <summary>True when the oscillation guard is currently blocking upward steps.</summary>
         public bool IsRenderScaleLocked => m_Scaler != null && m_Scaler.IsUpwardLocked(Time.unscaledTime);
@@ -291,7 +303,7 @@ namespace MobileAdjustGameQuality
             if (!AllowAdjustments)
                 return;
 
-            if (HandleThermal(p95 > budget * adaptive.overBudgetFactor))
+            if (HandleThermal(now, p95 > budget * adaptive.overBudgetFactor))
                 return;
 
             TierSettings settings = Current;
@@ -306,11 +318,21 @@ namespace MobileAdjustGameQuality
         }
 
         /// <summary>
-        /// Applies or unwinds the thermal fallback.
+        /// Applies or unwinds the heat response.
         /// </summary>
+        /// <remarks>
+        /// Three bands, escalating:
+        /// <list type="bullet">
+        /// <item>cool - hands back to the frame-time loop.</item>
+        /// <item>warm - step the render scale down on a timer, ignoring frame times.</item>
+        /// <item>severe - pin straight to the tier minimum, then drop the frame cap if that
+        /// was not enough.</item>
+        /// </list>
+        /// </remarks>
+        /// <param name="now">Current unscaled time.</param>
         /// <param name="overBudget">Whether p95 is currently over the frame budget.</param>
-        /// <returns>True when thermal handling owns this tick and normal adaptation is skipped.</returns>
-        bool HandleThermal(bool overBudget)
+        /// <returns>True when heat handling owns this tick and normal adaptation is skipped.</returns>
+        bool HandleThermal(float now, bool overBudget)
         {
             if (m_Thermal.IsSevere)
             {
@@ -359,11 +381,44 @@ namespace MobileAdjustGameQuality
             {
                 m_ThermalPinned = false;
                 m_Scaler.ResetWindow();
-                QualityDevLog.Log("Thermal: cooled. Render scale released.");
+                QualityDevLog.Log("Thermal: cooled out of severe. Render scale released.");
                 return true;
             }
 
+            // Warm, but not severe. The device still has headroom on paper - the OS has
+            // simply started to warn us - so shed load a step at a time rather than pinning.
+            if (m_Thermal.IsWarm)
+            {
+                m_IsSheddingHeat = true;
+
+                if (m_Scaler.DecideWarmResponse(now, CurrentRenderScale, Current.minRenderScale) ==
+                    AdaptiveScaler.Step.Down)
+                {
+                    StepRenderScale(-adaptive.stepSize,
+                        $"device warm ({DescribeThermal()}), shedding load before the OS throttles");
+                }
+
+                // Owns the tick: the frame-time loop would only ever agree to step down as
+                // well, and letting both run would overshoot to the minimum in seconds.
+                return true;
+            }
+
+            if (m_IsSheddingHeat)
+            {
+                m_IsSheddingHeat = false;
+                m_Scaler.NotifyCool();
+                QualityDevLog.Log("Thermal: cooled. Heat response released; normal adaptation resumes.");
+            }
+
             return false;
+        }
+
+        string DescribeThermal()
+        {
+            string level = m_Thermal.Level == ThermalLevel.Unknown ? "status n/a" : m_Thermal.Level.ToString();
+            return float.IsNaN(m_Thermal.Headroom)
+                ? level
+                : $"{level}, headroom {m_Thermal.Headroom:F2}";
         }
 
         void StepRenderScale(float delta, string reason)
@@ -541,6 +596,7 @@ namespace MobileAdjustGameQuality
 
             m_ThermalPinned = false;
             m_ThermalFrameRateDropped = false;
+            m_IsSheddingHeat = false;
             m_RestartRequested = true;
 
             QualityDevLog.Log(
@@ -583,35 +639,37 @@ namespace MobileAdjustGameQuality
 
         static TierSettings[] CreateDefaultTiers()
         {
-            // These match the Setup window's presets. Setup overwrites unityQualityLevel
-            // with the real appended indices; the rest is already right.
+            // The single source of truth for tier values. Setup overwrites only
+            // unityQualityLevel, with the indices the three quality levels actually landed
+            // on; everything else here is what the prefab ships with. Edit these numbers and
+            // rebuild the prefab from the Setup window to pick them up.
             return new[]
             {
                 new TierSettings
                 {
                     unityQualityLevel = 0,
                     targetFrameRate = 30,
-                    baseRenderScale = 0.75f,
+                    baseRenderScale = 0.65f,
                     minRenderScale = 0.60f,
-                    maxRenderScale = 0.75f,
+                    maxRenderScale = 0.70f,
                     thermalFallbackFrameRate = 0
                 },
                 new TierSettings
                 {
                     unityQualityLevel = 1,
                     targetFrameRate = 60,
-                    baseRenderScale = 0.85f,
+                    baseRenderScale = 0.75f,
                     minRenderScale = 0.70f,
-                    maxRenderScale = 0.85f,
+                    maxRenderScale = 0.80f,
                     thermalFallbackFrameRate = 30
                 },
                 new TierSettings
                 {
                     unityQualityLevel = 2,
                     targetFrameRate = 60,
-                    baseRenderScale = 1.00f,
+                    baseRenderScale = 0.85f,
                     minRenderScale = 0.80f,
-                    maxRenderScale = 1.00f,
+                    maxRenderScale = 0.90f,
                     thermalFallbackFrameRate = 30
                 }
             };

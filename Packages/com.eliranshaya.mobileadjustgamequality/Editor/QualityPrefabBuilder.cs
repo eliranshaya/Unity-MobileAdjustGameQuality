@@ -83,22 +83,28 @@ namespace MobileAdjustGameQuality.EditorTools
 
             tiers.arraySize = 3;
 
+            // Only the quality level index is written here, and that is the point.
+            //
+            // Every other tier value already arrived correct: the prefab is built from a
+            // fresh AddComponent, so MobileQualityManager's field initializer has just run
+            // and filled the array with its own defaults. Writing them again from a second
+            // table in this assembly would mean two places holding the same numbers, and
+            // the editor copy silently winning - so editing the defaults in the component
+            // would appear to do nothing, which is exactly the bug this replaces.
+            //
+            // The index cannot come from the component, because it is not a constant:
+            // it is wherever the three levels actually landed, which depends on what the
+            // project already had and on whether Setup replaced or appended.
+            if (qualityLevelIndices == null)
+                return;
+
             for (int tier = 0; tier < 3; tier++)
             {
-                QualityTierPresets.RuntimePreset preset = QualityTierPresets.Runtime(tier);
-                SerializedProperty element = tiers.GetArrayElementAtIndex(tier);
+                if (tier >= qualityLevelIndices.Length || qualityLevelIndices[tier] < 0)
+                    continue;
 
-                // The whole point of writing this from the Setup: the quality level index
-                // is wherever the levels happened to be appended, which depends on how
-                // many levels the project already had.
-                if (qualityLevelIndices != null && tier < qualityLevelIndices.Length && qualityLevelIndices[tier] >= 0)
-                    SerializedFieldHelper.TrySetRelative(element, "unityQualityLevel", k_Owner, qualityLevelIndices[tier]);
-
-                SerializedFieldHelper.TrySetRelative(element, "targetFrameRate", k_Owner, preset.targetFrameRate);
-                SerializedFieldHelper.TrySetRelative(element, "baseRenderScale", k_Owner, preset.baseRenderScale);
-                SerializedFieldHelper.TrySetRelative(element, "minRenderScale", k_Owner, preset.minRenderScale);
-                SerializedFieldHelper.TrySetRelative(element, "maxRenderScale", k_Owner, preset.maxRenderScale);
-                SerializedFieldHelper.TrySetRelative(element, "thermalFallbackFrameRate", k_Owner, preset.thermalFallbackFrameRate);
+                SerializedFieldHelper.TrySetRelative(
+                    tiers.GetArrayElementAtIndex(tier), "unityQualityLevel", k_Owner, qualityLevelIndices[tier]);
             }
 
             so.ApplyModifiedPropertiesWithoutUndo();

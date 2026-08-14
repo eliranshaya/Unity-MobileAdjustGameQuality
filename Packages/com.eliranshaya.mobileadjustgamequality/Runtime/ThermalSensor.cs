@@ -11,10 +11,20 @@ namespace MobileAdjustGameQuality
     /// applications, and deliberately so: the temperature at which one phone throttles is
     /// meaningless on another, because it depends on the chassis, the cooling and the
     /// vendor's own policy. What the OS gives instead is its own verdict about how much it
-    /// is currently holding the hardware back. Mirrors
-    /// <c>PowerManager.THERMAL_STATUS_*</c> for values 0-4; Android also defines
-    /// EMERGENCY (5) and SHUTDOWN (6), which are clamped to <see cref="Critical"/> because
-    /// at that point the OS is about to kill the process and no render scale will help.
+    /// is currently holding the hardware back.
+    /// <para>
+    /// Mirrors Android's <c>PowerManager.THERMAL_STATUS_*</c> for values 0-4; Android also
+    /// defines EMERGENCY (5) and SHUTDOWN (6), which are clamped to <see cref="Critical"/>
+    /// because at that point the OS is about to kill the process and no render scale will
+    /// help.
+    /// </para>
+    /// <para>
+    /// iOS has four states rather than five, so <c>NSProcessInfo.thermalState</c> maps as
+    /// nominal to <see cref="None"/>, fair to <see cref="Light"/>, serious to
+    /// <see cref="Severe"/> and critical to <see cref="Critical"/>. Nothing maps to
+    /// <see cref="Moderate"/> on iOS: Apple's "serious" already means "reduce work now",
+    /// which is the same instruction Android's SEVERE carries.
+    /// </para>
     /// </remarks>
     public enum ThermalLevel
     {
@@ -72,6 +82,18 @@ namespace MobileAdjustGameQuality
         bool m_Failed;
 #endif
 
+#if UNITY_IOS && !UNITY_EDITOR
+        // Implemented in Runtime/Plugins/iOS/MobileQualityThermalNative.mm, which the
+        // package ships and MobileQualityThermalIOSPostProcess verifies reached the Xcode
+        // project. The symbol is prefixed _MAQ_ on purpose: a generic name like
+        // _GetThermalState would collide at link time with any other package doing the same
+        // thing, and a duplicate-symbol error in Xcode is a miserable thing to debug.
+        [System.Runtime.InteropServices.DllImport("__Internal")]
+        static extern int MAQ_GetThermalState();
+
+        bool m_Failed;
+#endif
+
         /// <summary>The most recent status. <see cref="ThermalLevel.Unknown"/> if unavailable.</summary>
         public ThermalLevel Level { get; private set; } = ThermalLevel.Unknown;
 
@@ -111,7 +133,8 @@ namespace MobileAdjustGameQuality
 
         /// <summary>
         /// Acquires the platform handles. Safe to call on any platform; does nothing where
-        /// there is no thermal API.
+        /// there is nothing to acquire - iOS needs no setup, because the bundled plugin
+        /// reads a process-wide property with no handle to hold.
         /// </summary>
         public void Open()
         {
@@ -178,36 +201,34 @@ namespace MobileAdjustGameQuality
             }
 #endif
 
-            // iOS thermal state is available through ProcessInfo, but it needs a native
-            // plugin because Unity does not surface it. This package deliberately does not
-            // generate that plugin - dropping an unsigned .mm into someone's project is a
-            // build-configuration surprise, not a feature. If you want it, add:
-            //
-            //   Plugins/iOS/MAQThermal.mm
-            //   -----------------------------------------------------------------
-            //   #import <Foundation/Foundation.h>
-            //   extern "C" int MAQ_GetThermalState()
-            //   {
-            //       // NSProcessInfoThermalState: 0 nominal, 1 fair, 2 serious, 3 critical
-            //       return (int)[[NSProcessInfo processInfo] thermalState];
-            //   }
-            //   -----------------------------------------------------------------
-            //
-            // and then here:
-            //
-            //   #if UNITY_IOS && !UNITY_EDITOR
-            //   [System.Runtime.InteropServices.DllImport("__Internal")]
-            //   static extern int MAQ_GetThermalState();
-            //   ...
-            //   int state = MAQ_GetThermalState();        // 0..3
-            //   Level = state <= 0 ? ThermalLevel.None
-            //         : state == 1 ? ThermalLevel.Moderate
-            //         : state == 2 ? ThermalLevel.Severe
-            //         :              ThermalLevel.Critical;
-            //   #endif
-            //
-            // Note iOS reports four states, not five, so "fair" maps to Moderate rather
-            // than Light - iOS does not signal until it already means something.
+#if UNITY_IOS && !UNITY_EDITOR
+            if (m_Failed)
+                return;
+
+            try
+            {
+                // NSProcessInfo.thermalState, through the bundled .mm. Four states, not
+                // Android's five, and no headroom equivalent - Apple exposes no forecast, so
+                // Headroom stays NaN on iOS and every decision runs off the status alone.
+                int state = MAQ_GetThermalState();
+
+                Level = state <= 0 ? ThermalLevel.None
+                    : state == 1 ? ThermalLevel.Light      // .fair
+                    : state == 2 ? ThermalLevel.Severe     // .serious - Apple says reduce work now
+                    : ThermalLevel.Critical;                // .critical
+            }
+            catch (Exception e)
+            {
+                // The only realistic cause is the .mm not making it into the build, which
+                // throws EntryPointNotFoundException on the first call. Failing once and
+                // going quiet beats an exception every five seconds for the whole session.
+                m_Failed = true;
+                Level = ThermalLevel.Unknown;
+                QualityDevLog.Warn(
+                    $"iOS thermal query failed, disabling thermal input: {e.Message}. " +
+                    "MobileQualityThermalNative.mm is probably missing from the Xcode project.");
+            }
+#endif
         }
 
         /// <summary>Releases the JNI handles.</summary>
