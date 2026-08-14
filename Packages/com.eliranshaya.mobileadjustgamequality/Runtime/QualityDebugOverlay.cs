@@ -247,6 +247,11 @@ namespace MobileAdjustGameQuality
                     width = buttonRowWidth;
             }
 
+            // A couple of pixels of slack. The arithmetic above matches GUILayout exactly
+            // now that the margins are zeroed, but rounding on a fractional line height
+            // should not be the difference between a visible row and a clipped one.
+            height += 4f;
+
             return AnchoredRect(settings, WithPadding(width), WithPadding(height, vertical: true));
         }
 
@@ -381,7 +386,16 @@ namespace MobileAdjustGameQuality
                 m_Text = new GUIStyle(GUI.skin.label)
                 {
                     richText = false,
-                    wordWrap = false
+                    wordWrap = false,
+
+                    // Margins and padding are zeroed so a label occupies exactly lineHeight
+                    // and nothing else. GUILayout inserts each style's margin between
+                    // elements, and the skin's label carries a few pixels of it - which the
+                    // measuring code below cannot see. Thirteen invisible margins added up
+                    // to more than the height of the tier button row, so the row was laid
+                    // out past the bottom of the panel and clipped away.
+                    margin = new RectOffset(0, 0, 0, 0),
+                    padding = new RectOffset(0, 0, 0, 0)
                 };
                 m_Text.normal.textColor = Color.white;
 
@@ -390,9 +404,13 @@ namespace MobileAdjustGameQuality
                     fontStyle = FontStyle.Bold
                 };
 
-                // Buttons need the computed size too. Leaving them on the skin default is
-                // what made them render as unreadable specks next to correctly sized text.
-                m_Button = new GUIStyle(GUI.skin.button);
+                // Buttons need the computed font size too. Leaving them on the skin default
+                // is what made them render as unreadable specks next to correctly sized
+                // text. Horizontal margin stays, so the three tier buttons do not touch.
+                m_Button = new GUIStyle(GUI.skin.button)
+                {
+                    margin = new RectOffset(2, 2, 0, 0)
+                };
             }
 
             m_Text.fontSize = fontSize;
