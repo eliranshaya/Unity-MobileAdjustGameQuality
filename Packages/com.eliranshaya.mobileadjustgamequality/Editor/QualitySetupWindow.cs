@@ -154,6 +154,8 @@ namespace MobileAdjustGameQuality.EditorTools
                             "Android: ASTC textures", m_PlayerOptions.astcTextures);
                         m_PlayerOptions.batching = EditorGUILayout.ToggleLeft(
                             "Android: Static + Dynamic Batching", m_PlayerOptions.batching);
+                        m_PlayerOptions.iosSettings = EditorGUILayout.ToggleLeft(
+                            "iOS: Metal, MT Rendering, Batching", m_PlayerOptions.iosSettings);
                         m_PlayerOptions.frameTimingStats = EditorGUILayout.ToggleLeft(
                             "Frame Timing Stats (CPU/GPU timings)", m_PlayerOptions.frameTimingStats);
                         EditorGUI.indentLevel--;

@@ -187,6 +187,13 @@ logged, because a silently missing plugin looks exactly like a working one.
 No framework is linked: the plugin only touches `NSProcessInfo`, and Foundation is always
 linked. You never open Xcode.
 
+Setup's iOS Player Settings are a short list next to the Android one, and deliberately so: iOS
+decides most of it for you — the scripting backend is always IL2CPP, the architecture is always
+ARM64, the texture format comes from the platform defaults. What is left is Metal pinned rather
+than left on Auto, multithreaded rendering, and batching. Batching is the one that matters:
+`m_BuildTargetBatching` is keyed per platform under the name **`iPhone`**, so the Android entry
+does nothing at all for an iOS build.
+
 ---
 
 ## The overlay

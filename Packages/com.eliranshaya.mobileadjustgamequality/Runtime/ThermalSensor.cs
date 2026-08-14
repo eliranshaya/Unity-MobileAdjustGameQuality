@@ -197,7 +197,11 @@ namespace MobileAdjustGameQuality
                 // every decision on iOS runs off the status alone.
                 int state = MAQ_GetThermalState();
 
-                Level = state <= 0 ? ThermalLevel.None
+                // The plugin returns -1 when the API is unavailable. That is not "cool" - it
+                // is "no reading", and reporting it as cool would put a false 'nominal' in the
+                // overlay and make IsAvailable claim a signal that is not there.
+                Level = state < 0 ? ThermalLevel.Unknown
+                    : state == 0 ? ThermalLevel.None       // .nominal
                     : state == 1 ? ThermalLevel.Light      // .fair
                     : state == 2 ? ThermalLevel.Severe     // .serious - Apple says reduce work now
                     : ThermalLevel.Critical;                // .critical

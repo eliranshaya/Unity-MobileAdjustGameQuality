@@ -1,6 +1,6 @@
 {
   "name": "com.eliranshaya.mobileadjustgamequality",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "displayName": "Mobile Adjust Game Quality",
   "description": "Generates one mobile-tuned URP asset, renderer and quality level, applies the recommended mobile Player Settings, and gives you a prefab with an on-screen debug overlay. Runtime quality adaptation is left to Unity's Adaptive Performance package, which reads real CPU/GPU time and thermal headroom from the device.",
   "unity": "2022.3",

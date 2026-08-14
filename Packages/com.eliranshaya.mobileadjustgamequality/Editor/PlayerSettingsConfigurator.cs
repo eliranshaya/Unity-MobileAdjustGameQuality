@@ -45,6 +45,18 @@ namespace MobileAdjustGameQuality.EditorTools
             internal bool batching = true;
 
             /// <summary>
+            /// The iOS side: Metal only, multithreaded rendering, and batching.
+            /// </summary>
+            /// <remarks>
+            /// Shorter than the Android list because iOS decides most of it for you - the
+            /// scripting backend is always IL2CPP, the architecture is always ARM64, and the
+            /// texture format is chosen by the platform defaults. What is left is genuinely
+            /// per-project, and batching in particular is keyed per platform, so the Android
+            /// entry does nothing for an iOS build.
+            /// </remarks>
+            internal bool iosSettings = true;
+
+            /// <summary>
             /// Frame Timing Stats. Adaptive Performance needs it to tell a CPU-bound frame
             /// from a GPU-bound one, and the overlay reports it.
             /// </summary>
@@ -53,7 +65,7 @@ namespace MobileAdjustGameQuality.EditorTools
             /// <summary>True when at least one setting is selected.</summary>
             internal bool Any => optimizedFramePacing || linearColorSpace || graphicsApis
                                  || multithreadedRendering || il2cpp || arm64 || astcTextures
-                                 || batching || frameTimingStats;
+                                 || batching || frameTimingStats || iosSettings;
         }
 
         /// <summary>Applies the selected settings.</summary>
@@ -118,7 +130,10 @@ namespace MobileAdjustGameQuality.EditorTools
             }
 
             if (options.batching)
-                ApplyBatching(report);
+                ApplyBatching("Android", report);
+
+            if (options.iosSettings)
+                ApplyIOS(report);
 
             if (options.frameTimingStats && !PlayerSettings.enableFrameTimingStats)
             {
@@ -129,7 +144,33 @@ namespace MobileAdjustGameQuality.EditorTools
             AssetDatabase.SaveAssets();
         }
 
-        static void ApplyBatching(SetupReport report)
+        /// <summary>
+        /// The iOS half of the recommended settings.
+        /// </summary>
+        /// <remarks>
+        /// Short on purpose. iOS makes most of the Android list for you: the scripting backend
+        /// is always IL2CPP, the architecture is always ARM64, and the texture format comes
+        /// from the platform defaults. Writing them anyway would only add lines to the report
+        /// that describe nothing.
+        /// </remarks>
+        static void ApplyIOS(SetupReport report)
+        {
+            // Metal is the only graphics API modern Unity offers on iOS, but the project can
+            // still be left on "Auto Graphics API", and pinning it makes the build reproducible
+            // rather than dependent on the editor version's idea of the default.
+            PlayerSettings.SetUseDefaultGraphicsAPIs(BuildTarget.iOS, false);
+            PlayerSettings.SetGraphicsAPIs(BuildTarget.iOS, new[] { GraphicsDeviceType.Metal });
+            report.Update("iOS: Graphics API -> Metal");
+
+            PlayerSettings.SetMobileMTRendering(NamedBuildTarget.iOS, true);
+            report.Update("iOS: Multithreaded Rendering -> on");
+
+            // Keyed "iPhone" in ProjectSettings.asset, not "iOS". The Android entry does
+            // nothing for an iOS build, which is the whole reason this call exists.
+            ApplyBatching("iPhone", report);
+        }
+
+        static void ApplyBatching(string platform, SetupReport report)
         {
             // There is no public API for per-platform batching, so this edits
             // ProjectSettings.asset directly. The array is keyed by a platform name string
@@ -138,7 +179,7 @@ namespace MobileAdjustGameQuality.EditorTools
             Object[] assets = AssetDatabase.LoadAllAssetsAtPath(k_ProjectSettingsPath);
             if (assets == null || assets.Length == 0)
             {
-                report.Problem($"Could not open {k_ProjectSettingsPath}; batching was left alone.");
+                report.Problem($"Could not open {k_ProjectSettingsPath}; {platform} batching was left alone.");
                 return;
             }
 
@@ -146,22 +187,22 @@ namespace MobileAdjustGameQuality.EditorTools
             SerializedProperty batching = so.FindProperty("m_BuildTargetBatching");
             if (batching == null || !batching.isArray)
             {
-                report.Problem("'m_BuildTargetBatching' is missing; batching was left alone.");
+                report.Problem($"'m_BuildTargetBatching' is missing; {platform} batching was left alone.");
                 return;
             }
 
-            SerializedProperty entry = FindOrAppend(batching, "Android");
+            SerializedProperty entry = FindOrAppend(batching, platform);
             if (entry == null)
             {
-                report.Problem("Could not create the Android batching entry.");
+                report.Problem($"Could not create the {platform} batching entry.");
                 return;
             }
 
-            SerializedFieldHelper.TrySetRelative(entry, "m_StaticBatching", "ProjectSettings.Android", 1);
-            SerializedFieldHelper.TrySetRelative(entry, "m_DynamicBatching", "ProjectSettings.Android", 1);
+            SerializedFieldHelper.TrySetRelative(entry, "m_StaticBatching", $"ProjectSettings.{platform}", 1);
+            SerializedFieldHelper.TrySetRelative(entry, "m_DynamicBatching", $"ProjectSettings.{platform}", 1);
 
             so.ApplyModifiedPropertiesWithoutUndo();
-            report.Update("Android: Static + Dynamic Batching -> on");
+            report.Update($"{(platform == "iPhone" ? "iOS" : platform)}: Static + Dynamic Batching -> on");
         }
 
         static SerializedProperty FindOrAppend(SerializedProperty array, string platform)
