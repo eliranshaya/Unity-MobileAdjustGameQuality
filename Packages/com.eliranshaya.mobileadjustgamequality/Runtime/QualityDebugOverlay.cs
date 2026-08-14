@@ -200,6 +200,18 @@ namespace MobileAdjustGameQuality
                 m_Lines.Add($"Step up       {state}");
             }
 
+            if (settings.Has(OverlayFields.TierAdaptation))
+            {
+                string tierState = m_Manager.IsTierProbing ? "probing higher tier"
+                    : m_Manager.IsDeviceSettled ? "settled - no more attempts"
+                    : m_Manager.IsTierUpwardLocked ? "up locked this session"
+                    : "free";
+                m_Lines.Add($"Tier moves    {m_Manager.TierUpChangesUsed} up used   {tierState}");
+            }
+
+            if (settings.Has(OverlayFields.SessionHistory))
+                m_Lines.Add($"Sessions      {m_Manager.DescribeSessionHistory()}");
+
             if (settings.Has(OverlayFields.Adjustments))
                 m_Lines.Add($"Adjustments   {(m_Manager.AllowAdjustments ? "allowed" : "blocked by gameplay")}");
 

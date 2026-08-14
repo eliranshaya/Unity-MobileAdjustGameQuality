@@ -1,6 +1,6 @@
 {
   "name": "com.eliranshaya.mobileadjustgamequality",
-  "version": "2.3.1",
+  "version": "2.4.0",
   "displayName": "Mobile Adjust Game Quality",
   "description": "Three-tier mobile graphics quality for Unity URP - Low, Balanced and High. One button generates the URP assets, renderers, quality levels, Player Settings and a manager prefab. At runtime it picks a tier from the device and keeps the frame budget by adapting render scale from p95 frame time, with thermal awareness.",
   "unity": "2022.3",

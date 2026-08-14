@@ -86,6 +86,12 @@ namespace MobileAdjustGameQuality
         /// <summary>GPU name, graphics API and shader level.</summary>
         Device = 1 << 11,
 
+        /// <summary>Automatic tier changes: budget spent, lock state, probe in flight.</summary>
+        TierAdaptation = 1 << 12,
+
+        /// <summary>What the remembered sessions settled on.</summary>
+        SessionHistory = 1 << 13,
+
         /// <summary>Everything.</summary>
         Everything = ~0
     }

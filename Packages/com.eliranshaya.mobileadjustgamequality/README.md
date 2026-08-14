@@ -34,7 +34,7 @@ https://github.com/eliranshaya/Unity-MobileAdjustGameQuality.git?path=/Packages/
 To lock to a specific version, append the tag:
 
 ```
-https://github.com/eliranshaya/Unity-MobileAdjustGameQuality.git?path=/Packages/com.eliranshaya.mobileadjustgamequality#v2.3.1
+https://github.com/eliranshaya/Unity-MobileAdjustGameQuality.git?path=/Packages/com.eliranshaya.mobileadjustgamequality#v2.4.0
 ```
 
 ---
@@ -183,10 +183,13 @@ One MonoBehaviour, `MobileQualityManager`. Everything else is a plain class it o
 | --- | --- | --- |
 | `MobileQualityManager` | MonoBehaviour | The only component. Owns the lifetime and the coroutines. |
 | `FrameTimeSampler` | plain | Fixed ring buffer, p95 and mean, zero allocation. |
-| `AdaptiveScaler` | plain | The whole decision policy, including the oscillation guard. |
+| `AdaptiveScaler` | plain | Render scale policy, including the oscillation guard. |
+| `TierArbiter` | plain | When the tier itself should move, and the promotion budget. |
+| `TierHistory` | plain | What the last sessions settled on, persisted in PlayerPrefs. |
 | `ThermalSensor` | plain, `IDisposable` | Android JNI and the iOS plugin call, both wrapped in try/catch. |
 | `TierSettings` | serializable | Per-tier data. |
-| `AdaptiveSettings` | serializable | Tuning constants, one inspector foldout. |
+| `AdaptiveSettings` | serializable | Render scale tuning, one inspector foldout. |
+| `TierAdaptationSettings` | serializable | Tier change thresholds and session memory. |
 | `OverlaySettings` | serializable | Debug HUD position, fields and styling. |
 | `MobileQualityThermalNative.mm` | native, iOS | Six lines bridging `NSProcessInfo.thermalState`. |
 | `MobileQualityThermalIOSPostProcess` | editor, iOS only | Verifies the `.mm` reached the Xcode project. |
@@ -210,6 +213,31 @@ have to keep running while the game sits at `Time.timeScale = 0` in a pause menu
 ---
 
 ## How it works
+
+**Automatic tier changes.** The tier is not fixed after startup. When render scale has run
+out of room, the tier itself moves:
+
+| Direction | Condition | Rationed? |
+| --- | --- | --- |
+| **Down** | Render scale pinned at the tier minimum **and** p95 over budget for 30 s | Never. If the device cannot hold the tier, nothing is gained by staying. |
+| **Up** | Render scale at the tier maximum, p95 under budget × 0.6, device cool, for 60 s | Yes — 3 upward changes per session, and only while the device is not marked settled. |
+
+Every tier change rebuilds the pipeline and the player sees a hitch, which is why raising is
+a bet and lowering is not. A promotion is watched for 2 minutes: if the tier falls again in
+that window, the promotion was wrong, upward moves stop for the session, and the device is
+marked **settled** — no future session pays a hitch to learn the same thing again.
+
+**Session memory.** The tier each of the last 5 sessions settled on is persisted, and the
+most recent one decides where the next launch starts. Device detection only runs on the very
+first launch; after that the system starts from a measurement rather than a guess. A device
+that settled on Low starts on Low, and because promotion needs 60 seconds of proven headroom
+it will not even be attempted unless something really changed.
+
+The record is written when the session starts and rewritten on every tier change, not saved
+on quit — mobile apps are very often killed without `OnApplicationQuit` ever running.
+
+A tier the system picked for itself is never marked as a player choice, so a real settings
+menu still overrides everything.
 
 **Static device tiering at boot.** `DeviceTierDetector` scores the device additively from
 RAM, GPU model (Apple / Adreno / Mali / Xclipse / PowerVR, parsed out of the driver string),

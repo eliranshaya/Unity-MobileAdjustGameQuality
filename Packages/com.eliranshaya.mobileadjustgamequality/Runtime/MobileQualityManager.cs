@@ -47,6 +47,11 @@ namespace MobileAdjustGameQuality
         [SerializeField]
         AdaptiveSettings adaptive = new AdaptiveSettings();
 
+        [Tooltip("Automatic tier changes, and how much the system is allowed to remember " +
+                 "about this device between sessions.")]
+        [SerializeField]
+        TierAdaptationSettings tierAdaptation = new TierAdaptationSettings();
+
         [Tooltip("On-screen debug readout. Needs a DEVELOPER_MODE build - in a release build " +
                  "the overlay is compiled out and none of this has any effect.")]
         [SerializeField]
@@ -69,6 +74,8 @@ namespace MobileAdjustGameQuality
         FrameTimeSampler m_Sampler;
         ThermalSensor m_Thermal;
         AdaptiveScaler m_Scaler;
+        TierArbiter m_Arbiter;
+        TierHistory m_History;
 
         UniversalRenderPipelineAsset m_UrpAsset;
         int m_ActiveFrameRate = -1;
@@ -138,6 +145,27 @@ namespace MobileAdjustGameQuality
         /// <summary>True when upward steps are locked for the remainder of the session.</summary>
         public bool IsRenderScaleLockedForSession => m_Scaler != null && m_Scaler.IsLockedForSession;
 
+        /// <summary>Upward tier changes spent so far this session.</summary>
+        public int TierUpChangesUsed => m_Arbiter != null ? m_Arbiter.UpChangesUsed : 0;
+
+        /// <summary>True when no further upward tier change will be attempted this session.</summary>
+        public bool IsTierUpwardLocked => m_Arbiter != null && m_Arbiter.IsUpwardLocked;
+
+        /// <summary>True while a tier promotion is still being watched to see if it holds.</summary>
+        public bool IsTierProbing => m_Arbiter != null && m_Arbiter.IsProbing;
+
+        /// <summary>
+        /// True once this device has proven it cannot hold a higher tier. Persisted, so no
+        /// future session pays a hitch to learn it again.
+        /// </summary>
+        public bool IsDeviceSettled => m_History != null && m_History.IsSettled;
+
+        /// <summary>
+        /// The tiers the remembered sessions settled on, oldest first, formatted for display.
+        /// </summary>
+        /// <returns>Something like <c>High &gt; Balanced &gt; Low</c>, or <c>none</c>.</returns>
+        public string DescribeSessionHistory() => m_History != null ? m_History.Describe() : "none";
+
         /// <summary>
         /// Gate for gameplay. Set to <c>false</c> during combat, cutscenes or anything else
         /// where a resolution change would be noticed, and back to <c>true</c> at a natural
@@ -175,15 +203,26 @@ namespace MobileAdjustGameQuality
 
             m_Sampler = new FrameTimeSampler(adaptive.SafeSampleCount);
             m_Scaler = new AdaptiveScaler(adaptive);
+            m_Arbiter = new TierArbiter(tierAdaptation);
             m_Thermal = new ThermalSensor();
             m_Thermal.Open();
             m_Thermal.Poll();
+
+            m_History = new TierHistory();
+            m_History.Load();
+
+            // A device that already failed a promotion does not spend another hitch
+            // rediscovering that. Dropping a tier stays available either way.
+            if (m_History.IsSettled)
+                m_Arbiter.LockUpward();
 
             // Always before touching targetFrameRate: with vSync on, the frame cap is
             // silently ignored and every tier ends up at the panel refresh rate.
             QualitySettings.vSyncCount = 0;
 
-            ApplyTier(ResolveStartupTier(), true);
+            QualityTier startup = ResolveStartupTier();
+            m_History.BeginSession(startup, tierAdaptation.sessionsToRemember);
+            ApplyTier(startup, true);
         }
 
         void OnEnable()
@@ -273,6 +312,7 @@ namespace MobileAdjustGameQuality
 
                 m_Sampler.Reset();
                 m_Scaler.ResetWindow();
+                m_Arbiter.ResetWindow();
                 m_LastEvaluateTime = Time.unscaledTime;
                 m_RestartRequested = false;
 
@@ -302,6 +342,7 @@ namespace MobileAdjustGameQuality
             {
                 m_Sampler.Reset();
                 m_Scaler.ResetWindow();
+                m_Arbiter.ResetWindow();
                 return;
             }
 
@@ -323,10 +364,70 @@ namespace MobileAdjustGameQuality
             AdaptiveScaler.Step step = m_Scaler.Decide(now, CurrentRenderScale, settings.minRenderScale,
                 settings.maxRenderScale, m_Thermal.IsWarm);
 
-            if (step == AdaptiveScaler.Step.Hold) return;
+            if (step != AdaptiveScaler.Step.Hold)
+            {
+                float delta = step == AdaptiveScaler.Step.Down ? -adaptive.stepSize : adaptive.stepSize;
+                StepRenderScale(delta, $"p95 {p95:F1}ms vs {budget:F1}ms budget");
+                return;
+            }
 
-            float delta = step == AdaptiveScaler.Step.Down ? -adaptive.stepSize : adaptive.stepSize;
-            StepRenderScale(delta, $"p95 {p95:F1}ms vs {budget:F1}ms budget");
+            EvaluateTier(now, elapsed, p95, budget, settings);
+        }
+
+        /// <summary>
+        /// Asks the arbiter whether the tier itself should change, and applies the answer.
+        /// </summary>
+        /// <remarks>
+        /// Runs only on ticks where render scale decided to hold, because render scale is
+        /// the cheaper lever and should always be spent first. The arbiter's own conditions
+        /// enforce the same thing - it will not act until the scale is pinned at one end of
+        /// the tier's range - but ordering it after keeps the two from firing on the same
+        /// tick and stacking two changes on top of each other.
+        /// </remarks>
+        void EvaluateTier(float now, float elapsed, float p95, float budget, TierSettings settings)
+        {
+            const float k_ScaleEpsilon = 0.001f;
+
+            bool atMin = CurrentRenderScale <= settings.minRenderScale + k_ScaleEpsilon;
+            bool atMax = CurrentRenderScale >= settings.maxRenderScale - k_ScaleEpsilon;
+
+            TierArbiter.TierStep tierStep = m_Arbiter.Evaluate(
+                now, elapsed, p95, budget,
+                atMin, atMax,
+                canGoDown: (int)CurrentTier > 0,
+                canGoUp: (int)CurrentTier < tiers.Length - 1,
+                deviceWarm: m_Thermal.IsWarm,
+                overBudgetFactor: adaptive.overBudgetFactor);
+
+            if (tierStep == TierArbiter.TierStep.Hold)
+                return;
+
+            var next = (QualityTier)((int)CurrentTier + (int)tierStep);
+
+            QualityDevLog.Warn(tierStep == TierArbiter.TierStep.Down
+                ? $"Tier {CurrentTier} -> {next}: render scale was pinned at {settings.minRenderScale:F2} " +
+                  $"and p95 stayed at {p95:F1}ms against a {budget:F1}ms budget."
+                : $"Tier {CurrentTier} -> {next}: sustained headroom at maximum render scale " +
+                  $"(p95 {p95:F1}ms against a {budget:F1}ms budget). Watching to see if it holds.");
+
+            if (m_Arbiter.ProbeFailed)
+                m_History.MarkSettled();
+
+            ApplyAdaptiveTier(next);
+        }
+
+        /// <summary>
+        /// Applies a tier the system chose for itself: persisted as the session's outcome,
+        /// but never marked as a player choice, so a real settings menu still wins.
+        /// </summary>
+        /// <param name="tier">The tier to move to.</param>
+        void ApplyAdaptiveTier(QualityTier tier)
+        {
+            PlayerPrefs.SetInt(k_TierKey, (int)tier);
+            PlayerPrefs.Save();
+
+            m_History.UpdateCurrentSession(tier);
+            ApplyTier(tier, true);
         }
 
         /// <summary>
@@ -478,6 +579,7 @@ namespace MobileAdjustGameQuality
                 return;
             }
 
+            m_History?.UpdateCurrentSession(tier);
             ApplyTier(tier, true);
         }
 
@@ -533,6 +635,8 @@ namespace MobileAdjustGameQuality
         public void ApplyDetectedTier()
         {
             PlayerPrefs.DeleteKey(k_UserSetKey);
+            m_History?.Clear();
+            m_History?.BeginSession(CurrentTier, tierAdaptation.sessionsToRemember);
             SetTier(DeviceTierDetector.Detect());
         }
 
@@ -546,16 +650,32 @@ namespace MobileAdjustGameQuality
             }
 #endif
 
+            if (PlayerPrefs.GetInt(k_UserSetKey, 0) == 1 && PlayerPrefs.HasKey(k_TierKey))
+            {
+                var chosen = (QualityTier)Mathf.Clamp(PlayerPrefs.GetInt(k_TierKey), 0, tiers.Length - 1);
+                QualityDevLog.Log($"Startup tier {chosen} restored from the player's own choice.");
+                return chosen;
+            }
+
+            // What the last session actually settled on, which is a measurement rather than
+            // a guess, and therefore beats the detector.
+            if (m_History.TryGetRememberedTier(out QualityTier remembered))
+            {
+                QualityDevLog.Log(
+                    $"Startup tier {remembered} carried over from the last session. " +
+                    $"History: {m_History.Describe()}{(m_History.IsSettled ? " (settled)" : string.Empty)}");
+                return remembered;
+            }
+
             if (PlayerPrefs.HasKey(k_TierKey))
             {
                 var saved = (QualityTier)Mathf.Clamp(PlayerPrefs.GetInt(k_TierKey), 0, tiers.Length - 1);
-                bool userSet = PlayerPrefs.GetInt(k_UserSetKey, 0) == 1;
-                QualityDevLog.Log($"Startup tier {saved} restored from {(userSet ? "player choice" : "previous session")}.");
+                QualityDevLog.Log($"Startup tier {saved} restored from the previous session.");
                 return saved;
             }
 
             QualityTier detected = DeviceTierDetector.Detect();
-            QualityDevLog.Log($"Startup tier {detected} chosen by device detection.");
+            QualityDevLog.Log($"Startup tier {detected} chosen by device detection - first launch on this device.");
             return detected;
         }
 
