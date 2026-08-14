@@ -3,7 +3,7 @@ using System;
 namespace MobileAdjustGameQuality
 {
     /// <summary>
-    /// A fixed-size ring buffer of frame times with a p95 and a mean.
+    /// A fixed-size ring buffer of frame times with mean, p95, min and max.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -11,10 +11,17 @@ namespace MobileAdjustGameQuality
     /// <see cref="MobileQualityManager"/> feeds it one value per frame.
     /// </para>
     /// <para>
-    /// Both arrays are allocated once in the constructor and never grow. The sort runs
-    /// over a pre-allocated scratch copy rather than LINQ, so a statistics call allocates
-    /// nothing at all - which matters because it runs twice a second for the entire
-    /// lifetime of the app.
+    /// Both arrays are allocated once and never grow, and the sort runs over a
+    /// pre-allocated scratch copy rather than LINQ, so reading the statistics allocates
+    /// nothing at all. The overlay asks for them several times a second.
+    /// </para>
+    /// <para>
+    /// Note what these numbers can and cannot tell you. <c>Application.targetFrameRate</c>
+    /// makes the engine sleep until the frame is due, and that sleep is inside
+    /// <c>unscaledDeltaTime</c>. So a device comfortably holding 60 and a device only just
+    /// holding 60 both report 16.67 ms. These values prove a device is <i>missing</i> its
+    /// target; they can never prove it has room to spare. Adaptive Performance answers that
+    /// question, with real CPU and GPU durations from the platform.
     /// </para>
     /// </remarks>
     public sealed class FrameTimeSampler
@@ -37,13 +44,63 @@ namespace MobileAdjustGameQuality
         /// <summary>How many samples are currently held.</summary>
         public int Count => m_Count;
 
-        /// <summary>The window size.</summary>
-        public int Capacity => m_Samples.Length;
+        /// <summary>Mean frame time over the window, in milliseconds.</summary>
+        public float AverageMs { get; private set; }
 
-        /// <summary>Adds one frame time.</summary>
+        /// <summary>
+        /// 75th percentile frame time, in milliseconds. This is what decisions are made on.
+        /// </summary>
+        /// <remarks>
+        /// Not p95, and the difference matters. With vsync a frame time is quantised to
+        /// multiples of the refresh interval: at a 60 fps target on a 120 Hz panel a frame is
+        /// either 16.7 ms or 25 ms, with nothing in between. A device that is coping
+        /// perfectly still lands a few frames on 25 ms, which drags p95 over any sensible
+        /// threshold and makes it look like it is failing. p75 rides out that quantisation
+        /// noise while still catching a device that is genuinely slow for a quarter of its
+        /// frames or more.
+        /// </remarks>
+        public float P75Ms { get; private set; }
+
+        /// <summary>
+        /// 95th percentile frame time, in milliseconds. Reported, not decided on - it is the
+        /// stutter measure.
+        /// </summary>
+        public float P95Ms { get; private set; }
+
+        /// <summary>Fastest frame in the window, in milliseconds.</summary>
+        public float MinMs { get; private set; }
+
+        /// <summary>Slowest frame in the window, in milliseconds.</summary>
+        public float MaxMs { get; private set; }
+
+        /// <summary>Frames per second implied by <see cref="AverageMs"/>.</summary>
+        public float Fps => AverageMs > 0f ? 1000f / AverageMs : 0f;
+
+        /// <summary>
+        /// Frames longer than this are stalls, not slow frames, and are thrown away.
+        /// </summary>
+        /// <remarks>
+        /// Half a second is two frames per second. Nothing renders at two frames per second
+        /// for one frame and then recovers - a spike like that is an asset load, a garbage
+        /// collection, a domain reload or the editor doing something unrelated. Letting one
+        /// into a two-second window skews every statistic in it and walks the ladder down for
+        /// something that was never a rendering cost.
+        /// </remarks>
+        public const float StallThresholdMs = 500f;
+
+        /// <summary>How many stalls have been discarded. Reporting only.</summary>
+        public int DiscardedStalls { get; private set; }
+
+        /// <summary>Adds one frame time, unless it was a stall.</summary>
         /// <param name="milliseconds">Frame time in milliseconds.</param>
         public void Record(float milliseconds)
         {
+            if (milliseconds > StallThresholdMs)
+            {
+                DiscardedStalls++;
+                return;
+            }
+
             m_Samples[m_Head] = milliseconds;
             m_Head++;
             if (m_Head == m_Samples.Length)
@@ -52,48 +109,56 @@ namespace MobileAdjustGameQuality
                 m_Count++;
         }
 
-        /// <summary>Empties the window. Used after a tier change or a long stall.</summary>
+        /// <summary>Empties the window.</summary>
         public void Reset()
         {
             m_Head = 0;
             m_Count = 0;
+            AverageMs = 0f;
+            P75Ms = 0f;
+            P95Ms = 0f;
+            MinMs = 0f;
+            MaxMs = 0f;
         }
 
         /// <summary>
-        /// Computes the 95th percentile and the mean over the current window.
+        /// Recomputes the statistics. Call on a slow cadence - the overlay's refresh rate,
+        /// not every frame.
         /// </summary>
-        /// <param name="minimumSamples">Refuse to answer below this many samples.</param>
-        /// <param name="p95">95th percentile frame time, in milliseconds.</param>
-        /// <param name="average">Mean frame time, in milliseconds.</param>
-        /// <returns><c>false</c> when there is not enough data yet.</returns>
-        public bool TryGetStatistics(int minimumSamples, out float p95, out float average)
+        public void Recalculate()
         {
-            p95 = 0f;
-            average = 0f;
-
             int count = m_Count;
-            if (count < minimumSamples || count == 0)
-                return false;
+            if (count == 0)
+                return;
 
             float sum = 0f;
+            float min = float.MaxValue;
+            float max = float.MinValue;
+
             for (int i = 0; i < count; i++)
             {
                 float value = m_Samples[i];
                 m_Scratch[i] = value;
                 sum += value;
+
+                if (value < min) min = value;
+                if (value > max) max = value;
             }
 
             Array.Sort(m_Scratch, 0, count);
 
-            int index = (int)Math.Ceiling(0.95f * count) - 1;
-            if (index < 0)
-                index = 0;
-            else if (index >= count)
-                index = count - 1;
+            AverageMs = sum / count;
+            P75Ms = m_Scratch[PercentileIndex(0.75f, count)];
+            P95Ms = m_Scratch[PercentileIndex(0.95f, count)];
+            MinMs = min;
+            MaxMs = max;
+        }
 
-            p95 = m_Scratch[index];
-            average = sum / count;
-            return true;
+        static int PercentileIndex(float percentile, int count)
+        {
+            int index = (int)Math.Ceiling(percentile * count) - 1;
+            if (index < 0) return 0;
+            return index >= count ? count - 1 : index;
         }
     }
 }

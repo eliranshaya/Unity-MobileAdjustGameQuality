@@ -7,20 +7,22 @@ using UnityEngine.Rendering.Universal;
 namespace MobileAdjustGameQuality
 {
     /// <summary>
-    /// The one component this package puts in your scene. It resolves a quality tier at
-    /// boot, applies it, and then keeps the frame budget by adapting render scale.
+    /// The one component this package puts in your scene. Drop the generated prefab into
+    /// your first scene and it holds the frame budget by moving along a quality ladder.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Everything else - the frame time window, the thermal sensor, the decision policy -
-    /// is a plain class this component owns. None of them are MonoBehaviours, because none
-    /// of them need a transform, an inspector header or their own Update. One component
-    /// means one execution order, one lifetime, and one place to look.
+    /// Two signals drive it, and they answer different questions. <b>Frame time</b> answers
+    /// "is the device failing to reach its target?" - it can answer that honestly, because
+    /// missing a target really does show up in wall-clock frame time. It cannot answer "does
+    /// the device have room to spare", because <c>Application.targetFrameRate</c> makes the
+    /// engine sleep until the frame is due, pinning the measurement to the budget.
+    /// <b>Temperature</b> answers "is the device in trouble?" with no such blind spot, on
+    /// both platforms, capped or not.
     /// </para>
     /// <para>
-    /// Runs very early (<c>-1000</c>) so the tier is settled before any camera, volume or
-    /// gameplay system reads graphics state, and survives scene loads via
-    /// <c>DontDestroyOnLoad</c>. Put it in your first scene and forget about it.
+    /// Runs early (<c>-1000</c>) so quality is settled before any camera or volume reads
+    /// graphics state, and survives scene loads via <c>DontDestroyOnLoad</c>.
     /// </para>
     /// </remarks>
     [DefaultExecutionOrder(-1000)]
@@ -28,164 +30,98 @@ namespace MobileAdjustGameQuality
     [DisallowMultipleComponent]
     public class MobileQualityManager : MonoBehaviour
     {
-        const string k_TierKey = "quality.tier";
-        const string k_UserSetKey = "quality.userSet";
+        /// <summary>Frames the statistics window covers. Two seconds at 60 FPS.</summary>
+        const int k_SampleCount = 120;
 
-        /// <summary>
-        /// Android returns NaN from <c>getThermalHeadroom</c> if polled more than once a
-        /// second, and thermal state never moves fast enough to need a tighter loop.
-        /// </summary>
-        const float k_ThermalPollSeconds = 5f;
-
-        [Tooltip("One entry per QualityTier, in Low / Balanced / High order. " +
-                 "Populated by Tools > Mobile Quality > Setup.")]
+        [Tooltip("The quality configuration and the ladder. Populated by " +
+                 "Tools > Mobile Quality > Setup.")]
         [SerializeField]
-        TierSettings[] tiers = CreateDefaultTiers();
+        MobileQualityProfile profile = new MobileQualityProfile();
 
-        [Tooltip("Tuning for the adaptive render scale loop. The defaults are the shipping " +
-                 "values - you should not need to touch anything in here.")]
+        [Tooltip("How the game moves along the ladder.")]
         [SerializeField]
-        AdaptiveSettings adaptive = new AdaptiveSettings();
+        AdaptationSettings adaptation = new AdaptationSettings();
 
-        [Tooltip("Automatic tier changes, and how much the system is allowed to remember " +
-                 "about this device between sessions.")]
-        [SerializeField]
-        TierAdaptationSettings tierAdaptation = new TierAdaptationSettings();
-
-        [Tooltip("On-screen debug readout. Needs a DEVELOPER_MODE build - in a release build " +
-                 "the overlay is compiled out and none of this has any effect.")]
+        [Tooltip("On-screen debug readout. Needs a MAQ_DEVELOPER_MODE build - in a release " +
+                 "build the overlay is compiled out and none of this has any effect.")]
         [SerializeField]
         OverlaySettings overlay = new OverlaySettings();
 
-        [Tooltip("Forces a tier at startup, ignoring saved preferences and device detection. " +
-                 "-1 disables. Only honoured in DEVELOPER_MODE builds.")]
-        [SerializeField]
-        int developerForcedTier = -1;
-
-        // Cached once and reused for the lifetime of the component. A `new WaitForSeconds`
-        // inside the loop would allocate on every single iteration, twice a second,
-        // forever - which is exactly the kind of steady drip that fills a mobile GC.
-        // WaitForSecondsRealtime rather than WaitForSeconds because these loops must keep
-        // running while the game sits at timeScale = 0 in a pause menu.
-        readonly WaitForSecondsRealtime m_ThermalWait = new WaitForSecondsRealtime(k_ThermalPollSeconds);
-        readonly WaitForSecondsRealtime m_EvaluateWait = new WaitForSecondsRealtime(0.5f);
-        readonly WaitForSecondsRealtime m_WarmupWait = new WaitForSecondsRealtime(3f);
+        // Constructed once and reused. A `new WaitForSeconds` inside a loop would allocate on
+        // every iteration, forever. Realtime rather than scaled, so both loops keep running
+        // while the game sits at timeScale = 0 in a pause menu.
+        readonly WaitForSecondsRealtime m_ThermalWait = new WaitForSecondsRealtime(30f);
+        readonly WaitForSecondsRealtime m_CheckWait = new WaitForSecondsRealtime(0.25f);
 
         FrameTimeSampler m_Sampler;
         ThermalSensor m_Thermal;
-        AdaptiveScaler m_Scaler;
-        TierArbiter m_Arbiter;
-        TierHistory m_History;
-
+        QualityGovernor m_Governor;
         UniversalRenderPipelineAsset m_UrpAsset;
-        int m_ActiveFrameRate = -1;
-        float m_LastEvaluateTime;
-        bool m_RestartRequested;
-        bool m_ThermalPinned;
-        bool m_ThermalFrameRateDropped;
-        bool m_IsSheddingHeat;
+
+        float m_LastCheckTime;
+        float m_CalibrationEndsAt;
+        float m_GraceEndsAt;
+        float m_StepStableSince;
+        bool m_StepRemembered;
 
         /// <summary>The live instance, or <c>null</c> before the prefab has awoken.</summary>
         public static MobileQualityManager Instance { get; private set; }
 
-        /// <summary>The tier currently applied.</summary>
-        public QualityTier CurrentTier { get; private set; } = QualityTier.Balanced;
+        /// <summary>The quality configuration and ladder.</summary>
+        public MobileQualityProfile Profile => profile;
 
-        /// <summary>The settings block for <see cref="CurrentTier"/>.</summary>
-        public TierSettings Current => tiers[Mathf.Clamp((int)CurrentTier, 0, tiers.Length - 1)];
+        /// <summary>Ladder tuning.</summary>
+        public AdaptationSettings Adaptation => adaptation;
 
-        /// <summary>The render scale currently pushed into the URP asset.</summary>
-        public float CurrentRenderScale { get; private set; } = 1f;
-
-        /// <summary>The current tier's frame budget in milliseconds.</summary>
-        public float FrameBudgetMs => 1000f / Mathf.Max(1, Current.targetFrameRate);
-
-        /// <summary>The most recent 95th-percentile frame time, in milliseconds.</summary>
-        public float LastP95Ms { get; private set; }
-
-        /// <summary>The most recent mean frame time, in milliseconds. Reporting only.</summary>
-        public float LastAvgMs { get; private set; }
-
-        /// <summary>
-        /// Smoothed frames per second, derived from the mean frame time over the sampling
-        /// window. Reporting only - nothing decides anything on this, for the reason in
-        /// <see cref="LastP95Ms"/>'s docs.
-        /// </summary>
-        public float CurrentFps => LastAvgMs > 0f ? 1000f / LastAvgMs : 0f;
-
-        /// <summary>
-        /// Debug overlay configuration. Always serialized, but only acted on in a
-        /// <c>DEVELOPER_MODE</c> build.
-        /// </summary>
+        /// <summary>Debug overlay configuration.</summary>
         public OverlaySettings Overlay => overlay;
 
-        /// <summary>The most recent thermal status reported by the OS.</summary>
-        public ThermalLevel ThermalLevel => m_Thermal != null ? m_Thermal.Level : ThermalLevel.Unknown;
+        /// <summary>Frame time statistics over the last two seconds.</summary>
+        public FrameTimeSampler Stats => m_Sampler;
 
-        /// <summary>The most recent thermal headroom forecast, or <c>NaN</c> if unavailable.</summary>
-        public float ThermalHeadroom => m_Thermal != null ? m_Thermal.Headroom : float.NaN;
+        /// <summary>What the OS says about the device's temperature.</summary>
+        public ThermalSensor Thermal => m_Thermal;
 
-        /// <summary>True while the severe-heat fallback has taken over from normal adaptation.</summary>
-        public bool IsThermalThrottled => m_ThermalPinned || m_ThermalFrameRateDropped;
+        /// <summary>Adaptive Performance's view of the device, when that package is installed.</summary>
+        public AdaptivePerformanceBridge AdaptivePerformance { get; private set; }
+
+        /// <summary>The URP asset actually rendering.</summary>
+        public UniversalRenderPipelineAsset UrpAsset => m_UrpAsset;
+
+        /// <summary>Which rung of the ladder is applied.</summary>
+        public int CurrentStepIndex { get; private set; }
+
+        /// <summary>The rung that is applied.</summary>
+        public QualityStep CurrentStep => profile.Step(CurrentStepIndex);
+
+        /// <summary>Why the ladder last moved, or did not.</summary>
+        public QualityGovernor.Reason LastReason =>
+            m_Governor != null ? m_Governor.LastReason : QualityGovernor.Reason.Holding;
 
         /// <summary>
-        /// True when the OS reports the device warm enough that quality must not be raised.
+        /// True while the opening calibration window is still open: every frame is evaluated
+        /// and the ladder reacts within a second, so the device lands on the right rung while
+        /// the player is still loading in.
         /// </summary>
-        public bool IsDeviceWarm => m_Thermal != null && m_Thermal.IsWarm;
+        public bool IsCalibrating => Time.unscaledTime < m_CalibrationEndsAt;
+
+        /// <summary>Seconds of calibration left, or zero.</summary>
+        public float CalibrationRemaining => Mathf.Max(0f, m_CalibrationEndsAt - Time.unscaledTime);
+
+        /// <summary>True while the opening grace is still running and nothing is judged.</summary>
+        public bool IsInStartupGrace => Time.unscaledTime < m_GraceEndsAt;
+
+        /// <summary>True once the current rung has held long enough to be written to PlayerPrefs.</summary>
+        public bool IsStepRemembered => m_StepRemembered;
 
         /// <summary>
-        /// True while the render scale is being stepped down because of heat rather than
-        /// because of frame times.
-        /// </summary>
-        public bool IsSheddingHeat => m_IsSheddingHeat;
-
-        /// <summary>True when the oscillation guard is currently blocking upward steps.</summary>
-        public bool IsRenderScaleLocked => m_Scaler != null && m_Scaler.IsUpwardLocked(Time.unscaledTime);
-
-        /// <summary>True when upward steps are locked for the remainder of the session.</summary>
-        public bool IsRenderScaleLockedForSession => m_Scaler != null && m_Scaler.IsLockedForSession;
-
-        /// <summary>Upward tier changes spent so far this session.</summary>
-        public int TierUpChangesUsed => m_Arbiter != null ? m_Arbiter.UpChangesUsed : 0;
-
-        /// <summary>True when no further upward tier change will be attempted this session.</summary>
-        public bool IsTierUpwardLocked => m_Arbiter != null && m_Arbiter.IsUpwardLocked;
-
-        /// <summary>True while a tier promotion is still being watched to see if it holds.</summary>
-        public bool IsTierProbing => m_Arbiter != null && m_Arbiter.IsProbing;
-
-        /// <summary>
-        /// True once this device has proven it cannot hold a higher tier. Persisted, so no
-        /// future session pays a hitch to learn it again.
-        /// </summary>
-        public bool IsDeviceSettled => m_History != null && m_History.IsSettled;
-
-        /// <summary>
-        /// The tiers the remembered sessions settled on, oldest first, formatted for display.
-        /// </summary>
-        /// <returns>Something like <c>High &gt; Balanced &gt; Low</c>, or <c>none</c>.</returns>
-        public string DescribeSessionHistory() => m_History != null ? m_History.Describe() : "none";
-
-        /// <summary>
-        /// Gate for gameplay. Set to <c>false</c> during combat, cutscenes or anything else
-        /// where a resolution change would be noticed, and back to <c>true</c> at a natural
-        /// break. Measurement continues while this is <c>false</c>, so a change that became
-        /// due mid-fight is applied the moment the fight ends.
+        /// Gate for gameplay. Set to <c>false</c> during a cutscene or anything else where a
+        /// quality change would be noticed, and back to <c>true</c> at a natural break.
         /// </summary>
         public bool AllowAdjustments { get; set; } = true;
 
-        /// <summary>
-        /// The inspector override, or <c>-1</c> when unset. The field is serialized
-        /// unconditionally but only consulted under <c>DEVELOPER_MODE</c>, so toggling the
-        /// define never dirties the prefab or drops a value.
-        /// </summary>
-        public int DeveloperForcedTier => developerForcedTier;
-
-        /// <summary>Raised after a tier has been fully applied.</summary>
-        public event Action<QualityTier> OnTierChanged;
-
-        /// <summary>Raised whenever the render scale actually moves. Carries the new scale.</summary>
-        public event Action<float> OnRenderScaleChanged;
+        /// <summary>Raised whenever the ladder moves. Carries the new rung index.</summary>
+        public event Action<int> OnStepChanged;
 
         void Awake()
         {
@@ -199,52 +135,46 @@ namespace MobileAdjustGameQuality
             Instance = this;
             DontDestroyOnLoad(gameObject);
 
-            ValidateTiers();
+            m_Sampler = new FrameTimeSampler(k_SampleCount);
+            m_Governor = new QualityGovernor(adaptation, profile.steps != null ? profile.steps.Length : 1);
+            AdaptivePerformance = new AdaptivePerformanceBridge();
 
-            m_Sampler = new FrameTimeSampler(adaptive.SafeSampleCount);
-            m_Scaler = new AdaptiveScaler(adaptive);
-            m_Arbiter = new TierArbiter(tierAdaptation);
             m_Thermal = new ThermalSensor();
             m_Thermal.Open();
             m_Thermal.Poll();
 
-            m_History = new TierHistory();
-            m_History.Load();
+            ApplyQualityLevel();
 
-            // A device that already failed a promotion does not spend another hitch
-            // rediscovering that. Dropping a tier stays available either way.
-            if (m_History.IsSettled)
-                m_Arbiter.LockUpward();
+            // A rung that held on real hardware last session is a measurement; startStep is a
+            // guess. Prefer the measurement.
+            int start = profile.ClampStep(adaptation.startStep);
+            string origin = "default";
 
-            // Always before touching targetFrameRate: with vSync on, the frame cap is
-            // silently ignored and every tier ends up at the panel refresh rate.
-            QualitySettings.vSyncCount = 0;
+            if (adaptation.rememberLastStep && QualityStepMemory.TryLoad(profile.steps.Length, out int remembered))
+            {
+                start = profile.ClampStep(remembered);
+                origin = "remembered from the last session";
+            }
 
-            QualityTier startup = ResolveStartupTier();
-            m_History.BeginSession(startup, tierAdaptation.sessionsToRemember);
-            ApplyTier(startup, true);
+            m_GraceEndsAt = Time.unscaledTime + adaptation.startupGraceSeconds;
+            m_CalibrationEndsAt = m_GraceEndsAt + adaptation.calibrationSeconds;
+            ApplyStep(start, origin);
         }
 
         void OnEnable()
         {
             StartCoroutine(ThermalRoutine());
-            StartCoroutine(AdaptRoutine());
+            StartCoroutine(CheckRoutine());
         }
 
-        void OnDisable()
-        {
-            StopAllCoroutines();
-        }
+        void OnDisable() => StopAllCoroutines();
 
         void Start()
         {
-#if DEVELOPER_MODE
-            // The overlay is attached from code, never from the scene or the prefab. A
-            // serialized reference to a class that is compiled out leaves a permanent
-            // "The referenced script on this Behaviour is missing!" warning on the
-            // GameObject in every player build.
-            // Not added at all when the checkbox is off, so an overlay you are not looking at
-            // costs no OnGUI call rather than an early return inside one.
+#if MAQ_DEVELOPER_MODE
+            // Added from code, never from the prefab. A serialized reference to a class that
+            // is compiled out leaves a permanent "referenced script is missing" warning on
+            // the GameObject in every release build.
             if (overlay != null && overlay.show && GetComponent<QualityDebugOverlay>() == null)
                 gameObject.AddComponent<QualityDebugOverlay>();
 #endif
@@ -254,44 +184,52 @@ namespace MobileAdjustGameQuality
         {
             m_Thermal?.Dispose();
 
-            if (Instance == this) Instance = null;
+            if (Instance == this)
+                Instance = null;
         }
 
         /// <summary>
-        /// The only per-frame work in the whole package: one ring buffer write.
+        /// The only per-frame work: one ring buffer write.
         /// </summary>
         /// <remarks>
-        /// This cannot become a coroutine. A p95 is only meaningful if every frame is
-        /// measured, and a coroutine resuming each frame costs an iterator MoveNext plus a
-        /// scheduler visit - strictly more than this method. Everything that does not need
-        /// per-frame resolution lives in a coroutine instead.
+        /// This cannot be a coroutine. A p95 is only meaningful if every frame is measured,
+        /// and a coroutine resuming each frame costs an iterator <c>MoveNext</c> plus a
+        /// scheduler visit - strictly more than this method call.
         /// </remarks>
         void Update()
         {
-            // Unscaled: a paused or slow-motion game still has to render on time.
             m_Sampler.Record(Time.unscaledDeltaTime * 1000f);
+
+            // Calibration evaluates every frame. It is a bounded window - thirty seconds by
+            // default - and the cost is one sort of a 120-float scratch buffer, so a few
+            // microseconds. Note that what actually decides how fast this converges is the
+            // calibration window lengths, not the check rate: a one-second sustain window
+            // cannot fire more than once a second however often it is asked.
+            if (IsCalibrating)
+                Check();
         }
 
         void OnApplicationPause(bool paused)
         {
-            if (paused) return;
+            if (paused)
+                return;
 
             // Several Android OEMs reset the frame cap and re-enable vSync when the app
-            // returns to the foreground, which shows up in bug reports as "the game runs at
-            // 60 for a few minutes and then goes back to 30".
-            QualitySettings.vSyncCount = 0;
-            if (m_ActiveFrameRate > 0) Application.targetFrameRate = m_ActiveFrameRate;
-
-            // The device may have cooled in a pocket or heated in one; either way the
-            // measurements from before the pause describe a moment that is over.
+            // returns to the foreground, which shows up as "the game drops to 30 after a
+            // while" in bug reports. The measurements from before the pause describe a moment
+            // that is over, so the window starts again too.
+            ApplyFrameRate(CurrentStep);
+            m_Sampler.Reset();
             m_Thermal?.Poll();
-            m_RestartRequested = true;
+            m_Governor.Reset(Time.unscaledTime);
+            m_LastCheckTime = Time.unscaledTime;
         }
 
         IEnumerator ThermalRoutine()
         {
             while (true)
             {
+                m_ThermalWait.waitTime = adaptation.thermalPollSeconds;
                 m_ThermalWait.Reset();
                 yield return m_ThermalWait;
 
@@ -299,508 +237,178 @@ namespace MobileAdjustGameQuality
             }
         }
 
-        IEnumerator AdaptRoutine()
+        IEnumerator CheckRoutine()
         {
+            m_LastCheckTime = Time.unscaledTime;
+
             while (true)
             {
-                // The frames right after a pipeline rebuild are shader compilation and
-                // texture reloads, not gameplay. Measuring them would trigger an immediate
-                // step down on a device that is perfectly fine.
-                m_WarmupWait.waitTime = adaptive.warmupSeconds;
-                m_WarmupWait.Reset();
-                yield return m_WarmupWait;
+                m_CheckWait.waitTime = adaptation.checkEverySeconds;
+                m_CheckWait.Reset();
+                yield return m_CheckWait;
 
-                m_Sampler.Reset();
-                m_Scaler.ResetWindow();
-                m_Arbiter.ResetWindow();
-                m_LastEvaluateTime = Time.unscaledTime;
-                m_RestartRequested = false;
-
-                while (!m_RestartRequested)
-                {
-                    m_EvaluateWait.waitTime = adaptive.evaluateInterval;
-                    m_EvaluateWait.Reset();
-                    yield return m_EvaluateWait;
-
-                    if (m_RestartRequested) break;
-
-                    Tick();
-                }
+                // Update already drove the checks this phase; running them here as well would
+                // double-count elapsed time into the hysteresis timers.
+                if (!IsCalibrating)
+                    Check();
             }
         }
 
-        void Tick()
+        void Check()
         {
+            m_Sampler.Recalculate();
+
             float now = Time.unscaledTime;
-            float elapsed = now - m_LastEvaluateTime;
-            m_LastEvaluateTime = now;
+            float elapsed = now - m_LastCheckTime;
 
-            // A gap far longer than the interval means the app was backgrounded or the
-            // editor sat on a breakpoint. Feeding that into the hysteresis timers would
-            // clear the four-second threshold in a single tick and step down for no reason.
-            if (elapsed > adaptive.evaluateInterval * 5f)
+            // Nothing is judged during the opening grace, and nothing is judged until the
+            // window is full: a partial window is dominated by whatever happened during
+            // loading, and p95 over six frames is just "the worst frame".
+            if (!AllowAdjustments || now < m_GraceEndsAt || m_Sampler.Count < k_SampleCount)
+            {
+                m_LastCheckTime = now;
+                return;
+            }
+
+            // A gap far longer than the interval means the app was backgrounded or the editor
+            // sat on a breakpoint. Feeding that into the timers would clear a three-second
+            // threshold in a single tick.
+            m_LastCheckTime = now;
+
+            if (elapsed > adaptation.checkEverySeconds * 5f)
             {
                 m_Sampler.Reset();
-                m_Scaler.ResetWindow();
-                m_Arbiter.ResetWindow();
+                m_Governor.Reset(now);
                 return;
             }
 
-            if (!m_Sampler.TryGetStatistics(adaptive.MinimumSamplesToDecide, out float p95, out float average)) return;
+            int next = m_Governor.Evaluate(
+                now, elapsed,
+                m_Sampler.P75Ms,
+                CurrentStep.FrameBudgetMs,
+                CurrentStepIndex,
+                profile.WorstStep,
+                profile.FindLowerFrameRateStep(CurrentStepIndex),
+                m_Thermal.IsWarm,
+                m_Thermal.IsSevere,
+                IsCalibrating);
 
-            LastP95Ms = p95;
-            LastAvgMs = average;
-
-            float budget = FrameBudgetMs;
-            m_Scaler.Accumulate(elapsed, p95, budget);
-
-            // Gameplay veto covers everything, thermal response included. A resolution drop
-            // in the middle of a boss fight is worse than four more warm seconds.
-            if (!AllowAdjustments) return;
-
-            if (HandleThermal(now, p95 > budget * adaptive.overBudgetFactor)) return;
-
-            TierSettings settings = Current;
-            AdaptiveScaler.Step step = m_Scaler.Decide(now, CurrentRenderScale, settings.minRenderScale,
-                settings.maxRenderScale, m_Thermal.IsWarm);
-
-            if (step != AdaptiveScaler.Step.Hold)
+            if (next != CurrentStepIndex)
             {
-                float delta = step == AdaptiveScaler.Step.Down ? -adaptive.stepSize : adaptive.stepSize;
-                StepRenderScale(delta, $"p95 {p95:F1}ms vs {budget:F1}ms budget");
+                ApplyStep(next, m_Governor.LastReason.ToString());
                 return;
             }
 
-            EvaluateTier(now, elapsed, p95, budget, settings);
+            RememberIfSettled(now);
         }
 
         /// <summary>
-        /// Asks the arbiter whether the tier itself should change, and applies the answer.
+        /// Writes the current rung to PlayerPrefs once it has held long enough to count as
+        /// where this device belongs, rather than somewhere it passed through.
         /// </summary>
-        /// <remarks>
-        /// Runs only on ticks where render scale decided to hold, because render scale is
-        /// the cheaper lever and should always be spent first. The arbiter's own conditions
-        /// enforce the same thing - it will not act until the scale is pinned at one end of
-        /// the tier's range - but ordering it after keeps the two from firing on the same
-        /// tick and stacking two changes on top of each other.
-        /// </remarks>
-        void EvaluateTier(float now, float elapsed, float p95, float budget, TierSettings settings)
+        void RememberIfSettled(float now)
         {
-            const float k_ScaleEpsilon = 0.001f;
-
-            bool atMin = CurrentRenderScale <= settings.minRenderScale + k_ScaleEpsilon;
-            bool atMax = CurrentRenderScale >= settings.maxRenderScale - k_ScaleEpsilon;
-
-            TierArbiter.TierStep tierStep = m_Arbiter.Evaluate(
-                now, elapsed, p95, budget,
-                atMin, atMax,
-                canGoDown: (int)CurrentTier > 0,
-                canGoUp: (int)CurrentTier < tiers.Length - 1,
-                deviceWarm: m_Thermal.IsWarm,
-                overBudgetFactor: adaptive.overBudgetFactor);
-
-            if (tierStep == TierArbiter.TierStep.Hold)
+            if (!adaptation.rememberLastStep || m_StepRemembered)
                 return;
 
-            var next = (QualityTier)((int)CurrentTier + (int)tierStep);
-
-            QualityDevLog.Warn(tierStep == TierArbiter.TierStep.Down
-                ? $"Tier {CurrentTier} -> {next}: render scale was pinned at {settings.minRenderScale:F2} " +
-                  $"and p95 stayed at {p95:F1}ms against a {budget:F1}ms budget."
-                : $"Tier {CurrentTier} -> {next}: sustained headroom at maximum render scale " +
-                  $"(p95 {p95:F1}ms against a {budget:F1}ms budget). Watching to see if it holds.");
-
-            if (m_Arbiter.ProbeFailed)
-                m_History.MarkSettled();
-
-            ApplyAdaptiveTier(next);
-        }
-
-        /// <summary>
-        /// Applies a tier the system chose for itself: persisted as the session's outcome,
-        /// but never marked as a player choice, so a real settings menu still wins.
-        /// </summary>
-        /// <param name="tier">The tier to move to.</param>
-        void ApplyAdaptiveTier(QualityTier tier)
-        {
-            PlayerPrefs.SetInt(k_TierKey, (int)tier);
-            PlayerPrefs.Save();
-
-            m_History.UpdateCurrentSession(tier);
-            ApplyTier(tier, true);
-        }
-
-        /// <summary>
-        /// Applies or unwinds the heat response.
-        /// </summary>
-        /// <remarks>
-        /// Three bands, escalating:
-        /// <list type="bullet">
-        /// <item>cool - hands back to the frame-time loop.</item>
-        /// <item>warm - step the render scale down on a timer, ignoring frame times.</item>
-        /// <item>severe - pin straight to the tier minimum, then drop the frame cap if that
-        /// was not enough.</item>
-        /// </list>
-        /// </remarks>
-        /// <param name="now">Current unscaled time.</param>
-        /// <param name="overBudget">Whether p95 is currently over the frame budget.</param>
-        /// <returns>True when heat handling owns this tick and normal adaptation is skipped.</returns>
-        bool HandleThermal(float now, bool overBudget)
-        {
-            if (m_Thermal.IsSevere)
-            {
-                // Order matters, and it is the whole point of the two-step response:
-                // pinning the render scale costs sharpness, which players tolerate and
-                // often do not consciously notice. Halving the frame rate is the single
-                // most noticeable change the game can make, so it is the last resort and
-                // only happens if the cheaper move was not enough.
-                if (!m_ThermalPinned)
-                {
-                    m_ThermalPinned = true;
-                    float min = Current.minRenderScale;
-                    if (!Mathf.Approximately(min, CurrentRenderScale))
-                    {
-                        SetRenderScale(min);
-                        OnRenderScaleChanged?.Invoke(CurrentRenderScale);
-                    }
-
-                    QualityDevLog.Warn($"Thermal: severe. Render scale pinned to {min:F2}.");
-                    return true;
-                }
-
-                int fallback = Current.thermalFallbackFrameRate;
-                if (overBudget && !m_ThermalFrameRateDropped && fallback > 0)
-                {
-                    m_ThermalFrameRateDropped = true;
-                    SetTargetFrameRate(fallback);
-                    QualityDevLog.Warn(
-                        $"Thermal: still over budget at minimum render scale. Frame cap dropped to {fallback}.");
-                }
-
-                return true;
-            }
-
-            // Cooled down. Unwind in reverse, one step per tick, so the player gets the
-            // frame rate back before the resolution starts climbing again.
-            if (m_ThermalFrameRateDropped)
-            {
-                m_ThermalFrameRateDropped = false;
-                RestoreTargetFrameRate();
-                QualityDevLog.Log("Thermal: cooled. Frame cap restored.");
-                return true;
-            }
-
-            if (m_ThermalPinned)
-            {
-                m_ThermalPinned = false;
-                m_Scaler.ResetWindow();
-                QualityDevLog.Log("Thermal: cooled out of severe. Render scale released.");
-                return true;
-            }
-
-            // Warm, but not severe. The device still has headroom on paper - the OS has
-            // simply started to warn us - so shed load a step at a time rather than pinning.
-            if (m_Thermal.IsWarm)
-            {
-                m_IsSheddingHeat = true;
-
-                if (m_Scaler.DecideWarmResponse(now, CurrentRenderScale, Current.minRenderScale) == AdaptiveScaler.Step.Down)
-                {
-                    StepRenderScale(-adaptive.stepSize,
-                        $"device warm ({DescribeThermal()}), shedding load before the OS throttles");
-                }
-
-                // Owns the tick: the frame-time loop would only ever agree to step down as
-                // well, and letting both run would overshoot to the minimum in seconds.
-                return true;
-            }
-
-            if (m_IsSheddingHeat)
-            {
-                m_IsSheddingHeat = false;
-                m_Scaler.NotifyCool();
-                QualityDevLog.Log("Thermal: cooled. Heat response released; normal adaptation resumes.");
-            }
-
-            return false;
-        }
-
-        string DescribeThermal()
-        {
-            string level = m_Thermal.Level == ThermalLevel.Unknown ? "status n/a" : m_Thermal.Level.ToString();
-            return float.IsNaN(m_Thermal.Headroom) ? level : $"{level}, headroom {m_Thermal.Headroom:F2}";
-        }
-
-        void StepRenderScale(float delta, string reason)
-        {
-            float before = CurrentRenderScale;
-            SetRenderScale(before + delta);
-            float after = CurrentRenderScale;
-
-            if (Mathf.Approximately(before, after)) return;
-
-            QualityDevLog.Log($"Render scale {before:F2} -> {after:F2} ({reason}).");
-            OnRenderScaleChanged?.Invoke(after);
-        }
-
-        /// <summary>
-        /// Switches tier by index.
-        /// </summary>
-        /// <param name="index">0 Low, 1 Balanced, 2 High. Clamped.</param>
-        /// <param name="isPlayerChoice">
-        /// True when the player picked this in a settings menu. A player choice is sticky:
-        /// device detection will not override it on later launches.
-        /// </param>
-        public void SetTier(int index, bool isPlayerChoice = false)
-        {
-            SetTier((QualityTier)Mathf.Clamp(index, 0, tiers.Length - 1), isPlayerChoice);
-        }
-
-        /// <summary>
-        /// Switches tier.
-        /// </summary>
-        /// <param name="tier">The tier to apply.</param>
-        /// <param name="isPlayerChoice">
-        /// True when the player picked this in a settings menu. A player choice is sticky:
-        /// device detection will not override it on later launches.
-        /// </param>
-        public void SetTier(QualityTier tier, bool isPlayerChoice = false)
-        {
-            int index = Mathf.Clamp((int)tier, 0, tiers.Length - 1);
-            tier = (QualityTier)index;
-
-            PlayerPrefs.SetInt(k_TierKey, index);
-            if (isPlayerChoice) PlayerPrefs.SetInt(k_UserSetKey, 1);
-            PlayerPrefs.Save();
-
-            if (tier == CurrentTier && m_UrpAsset != null)
-            {
-                QualityDevLog.Log($"Tier {tier} already active; skipping the pipeline switch.");
+            if (now - m_StepStableSince < adaptation.rememberAfterSeconds)
                 return;
-            }
 
-            m_History?.UpdateCurrentSession(tier);
-            ApplyTier(tier, true);
+            QualityStepMemory.Save(CurrentStepIndex, profile.steps.Length);
+            m_StepRemembered = true;
         }
 
         /// <summary>
-        /// Sets the render scale, clamped to the current tier's range. This is the only
-        /// graphics knob the adaptive loop is allowed to move.
+        /// Moves to a rung of the ladder and applies it.
         /// </summary>
-        /// <param name="scale">Requested render scale.</param>
-        public void SetRenderScale(float scale)
+        /// <param name="index">Rung index, clamped to the ladder.</param>
+        /// <param name="reason">Why, for the log.</param>
+        public void ApplyStep(int index, string reason = "manual")
         {
-            TierSettings settings = Current;
-            float clamped = Mathf.Clamp(scale, settings.minRenderScale, settings.maxRenderScale);
+            int clamped = profile.ClampStep(index);
+            QualityStep step = profile.Step(clamped);
 
-            if (m_UrpAsset == null) m_UrpAsset = ResolveUrpAsset();
+            CurrentStepIndex = clamped;
 
-            if (m_UrpAsset == null)
+            if (m_UrpAsset != null)
+            {
+                // Only fields URP allows to be written at runtime. supportsMainLightShadows
+                // and shadowCascadeCount have no public setter, which is why shadows are
+                // turned off with a zero distance instead: URP computes
+                // cameraRenderShadows = maxShadowDistance > 0 and skips the whole pass.
+                m_UrpAsset.renderScale = step.renderScale;
+
+                // All or nothing. Zero is how shadows get switched off, because
+                // supportsMainLightShadows has no public setter; switching them back on
+                // restores the single authored distance rather than anything per-rung, so no
+                // rung can ever leave near objects shadowed and objects behind them not.
+                m_UrpAsset.shadowDistance = step.shadowsEnabled ? profile.shadowDistance : 0f;
+
+                if (step.shadowsEnabled)
+                    m_UrpAsset.mainLightShadowmapResolution = step.shadowResolution;
+            }
+
+            ApplyFrameRate(step);
+
+            m_Governor.Reset(Time.unscaledTime);
+            m_Sampler.Reset();
+
+            m_StepStableSince = Time.unscaledTime;
+            m_StepRemembered = false;
+
+            QualityDevLog.Log($"Quality step {clamped}/{profile.WorstStep} — {step} ({reason}).");
+            OnStepChanged?.Invoke(clamped);
+        }
+
+        void ApplyFrameRate(QualityStep step)
+        {
+            // Always first: with vSync on, the frame cap is silently ignored.
+            if (profile.disableVSync)
+                QualitySettings.vSyncCount = 0;
+
+            Application.targetFrameRate = step.targetFrameRate;
+        }
+
+        /// <summary>The name Unity has for the active quality level.</summary>
+        public string CurrentQualityLevelName
+        {
+            get
+            {
+                string[] names = QualitySettings.names;
+                int index = QualitySettings.GetQualityLevel();
+                return index >= 0 && index < names.Length ? names[index] : "<none>";
+            }
+        }
+
+        void ApplyQualityLevel()
+        {
+            int levelCount = QualitySettings.names.Length;
+
+            if (profile.unityQualityLevel < 0 || profile.unityQualityLevel >= levelCount)
             {
                 QualityDevLog.FatalConfigError(
-                    "No UniversalRenderPipelineAsset is active, so render scale cannot be applied. " +
-                    "Check Graphics Settings and the Quality level's Render Pipeline Asset.");
-                return;
+                    $"Quality level {profile.unityQualityLevel} does not exist ({levelCount} present). " +
+                    "Re-run Tools > Mobile Quality > Setup.");
             }
-
-            if (Mathf.Approximately(clamped, CurrentRenderScale)) return;
-
-            CurrentRenderScale = clamped;
-            m_UrpAsset.renderScale = clamped;
-        }
-
-        /// <summary>
-        /// Overrides the frame cap without changing tier. Zeroes vSync first, otherwise the
-        /// cap has no effect at all.
-        /// </summary>
-        /// <param name="fps">Target frames per second. Use <c>-1</c> for uncapped.</param>
-        public void SetTargetFrameRate(int fps)
-        {
-            QualitySettings.vSyncCount = 0;
-            m_ActiveFrameRate = fps;
-            Application.targetFrameRate = fps;
-            QualityDevLog.Log($"Target frame rate set to {fps}.");
-        }
-
-        /// <summary>Restores the frame cap defined by the current tier.</summary>
-        public void RestoreTargetFrameRate()
-        {
-            SetTargetFrameRate(Current.targetFrameRate);
-        }
-
-        /// <summary>
-        /// Re-runs device detection and applies the result, ignoring any saved player
-        /// choice. This is a "reset to recommended" action, not a startup path.
-        /// </summary>
-        public void ApplyDetectedTier()
-        {
-            PlayerPrefs.DeleteKey(k_UserSetKey);
-            m_History?.Clear();
-            m_History?.BeginSession(CurrentTier, tierAdaptation.sessionsToRemember);
-            SetTier(DeviceTierDetector.Detect());
-        }
-
-        QualityTier ResolveStartupTier()
-        {
-#if DEVELOPER_MODE
-            if (developerForcedTier >= 0 && developerForcedTier < tiers.Length)
-            {
-                QualityDevLog.Warn($"Startup tier forced to {(QualityTier)developerForcedTier} by developerForcedTier.");
-                return (QualityTier)developerForcedTier;
-            }
-#endif
-
-            if (PlayerPrefs.GetInt(k_UserSetKey, 0) == 1 && PlayerPrefs.HasKey(k_TierKey))
-            {
-                var chosen = (QualityTier)Mathf.Clamp(PlayerPrefs.GetInt(k_TierKey), 0, tiers.Length - 1);
-                QualityDevLog.Log($"Startup tier {chosen} restored from the player's own choice.");
-                return chosen;
-            }
-
-            // What the last session actually settled on, which is a measurement rather than
-            // a guess, and therefore beats the detector.
-            if (m_History.TryGetRememberedTier(out QualityTier remembered))
-            {
-                QualityDevLog.Log(
-                    $"Startup tier {remembered} carried over from the last session. " +
-                    $"History: {m_History.Describe()}{(m_History.IsSettled ? " (settled)" : string.Empty)}");
-                return remembered;
-            }
-
-            if (PlayerPrefs.HasKey(k_TierKey))
-            {
-                var saved = (QualityTier)Mathf.Clamp(PlayerPrefs.GetInt(k_TierKey), 0, tiers.Length - 1);
-                QualityDevLog.Log($"Startup tier {saved} restored from the previous session.");
-                return saved;
-            }
-
-            QualityTier detected = DeviceTierDetector.Detect();
-            QualityDevLog.Log($"Startup tier {detected} chosen by device detection - first launch on this device.");
-            return detected;
-        }
-
-        void ApplyTier(QualityTier tier, bool applyExpensiveChanges)
-        {
-            CurrentTier = tier;
-            TierSettings settings = Current;
-
-            if (settings.unityQualityLevel >= 0 && settings.unityQualityLevel < QualitySettings.names.Length)
+            else
             {
                 // applyExpensiveChanges reloads textures and rebuilds the pipeline. Correct
-                // here - this is a deliberate tier switch - and never set from the adaptive
-                // loop, where it would cause a visible hitch.
-                QualitySettings.SetQualityLevel(settings.unityQualityLevel, applyExpensiveChanges);
-            }
-            else
-            {
-                QualityDevLog.FatalConfigError(
-                    $"Tier {tier} points at quality level {settings.unityQualityLevel}, which does not exist " +
-                    $"({QualitySettings.names.Length} levels present). Re-run Tools > Mobile Quality > Setup.");
+                // here because it happens once, at startup, before anything is on screen.
+                QualitySettings.SetQualityLevel(profile.unityQualityLevel, true);
             }
 
-            // Re-read after the level switch, never before: QualitySettings.renderPipeline
-            // returns the asset assigned to the *new* level, and any reference cached across
-            // the switch points at the old one.
-            m_UrpAsset = ResolveUrpAsset();
+            // Re-read after the switch, never before: QualitySettings.renderPipeline returns
+            // the asset assigned to the *new* level, and a reference cached across the switch
+            // points at the old one.
+            m_UrpAsset = QualitySettings.renderPipeline as UniversalRenderPipelineAsset
+                         ?? GraphicsSettings.defaultRenderPipeline as UniversalRenderPipelineAsset;
 
             if (m_UrpAsset == null)
             {
-                QualityDevLog.FatalConfigError("No UniversalRenderPipelineAsset found after switching quality level. " +
-                                               "The game will render with whatever pipeline is active and quality control is disabled.");
+                QualityDevLog.FatalConfigError(
+                    "No UniversalRenderPipelineAsset is active, so nothing can be adapted. Check " +
+                    "Project Settings > Graphics and the quality level's Render Pipeline Asset.");
             }
-            else
-            {
-                CurrentRenderScale = Mathf.Clamp(settings.baseRenderScale, settings.minRenderScale, settings.maxRenderScale);
-                m_UrpAsset.renderScale = CurrentRenderScale;
-            }
-
-            QualitySettings.vSyncCount = 0;
-            m_ActiveFrameRate = settings.targetFrameRate;
-            Application.targetFrameRate = settings.targetFrameRate;
-
-            m_ThermalPinned = false;
-            m_ThermalFrameRateDropped = false;
-            m_IsSheddingHeat = false;
-            m_RestartRequested = true;
-
-            QualityDevLog.Log($"Applied tier {tier} | qualityLevel={settings.unityQualityLevel} " +
-                              $"fps={settings.targetFrameRate} renderScale={CurrentRenderScale:F2} " +
-                              $"urp='{(m_UrpAsset != null ? m_UrpAsset.name : "<none>")}'");
-
-            OnTierChanged?.Invoke(tier);
-        }
-
-        static UniversalRenderPipelineAsset ResolveUrpAsset()
-        {
-            // The quality level's override wins when one is assigned; otherwise the
-            // project-wide default is what is actually rendering.
-            var asset = QualitySettings.renderPipeline as UniversalRenderPipelineAsset;
-            if (asset != null) return asset;
-
-            return GraphicsSettings.defaultRenderPipeline as UniversalRenderPipelineAsset;
-        }
-
-        void ValidateTiers()
-        {
-            if (tiers == null || tiers.Length != 3)
-            {
-                QualityDevLog.Warn("Tier array was missing or the wrong length; rebuilding it with defaults.");
-                tiers = CreateDefaultTiers();
-                return;
-            }
-
-            for (int i = 0; i < tiers.Length; i++)
-            {
-                if (tiers[i] != null) continue;
-
-                QualityDevLog.Warn($"Tier {i} was null; rebuilding it with defaults.");
-                tiers[i] = CreateDefaultTiers()[i];
-            }
-        }
-
-        /// <summary>
-        /// The shipping tier values, freshly allocated. This is the single source of truth:
-        /// the serialized <c>tiers</c> field initialises from it, and the Setup window reads
-        /// it when authoring the generated URP assets so their baked render scale matches
-        /// what the manager will apply at boot.
-        /// </summary>
-        /// <returns>Three tier settings, in Low / Balanced / High order.</returns>
-        public static TierSettings[] CreateDefaultTiers()
-        {
-            // The single source of truth for tier values. Setup overwrites only
-            // unityQualityLevel, with the indices the three quality levels actually landed
-            // on; everything else here is what the prefab ships with. Edit these numbers and
-            // rebuild the prefab from the Setup window to pick them up.
-            return new[]
-            {
-                new TierSettings
-                {
-                    unityQualityLevel = 0,
-                    targetFrameRate = 30,
-                    baseRenderScale = 0.65f,
-                    minRenderScale = 0.60f,
-                    maxRenderScale = 0.70f,
-                    thermalFallbackFrameRate = 0
-                },
-                new TierSettings
-                {
-                    unityQualityLevel = 1,
-                    targetFrameRate = 60,
-                    baseRenderScale = 0.75f,
-                    minRenderScale = 0.70f,
-                    maxRenderScale = 0.80f,
-                    thermalFallbackFrameRate = 30
-                },
-                new TierSettings
-                {
-                    unityQualityLevel = 2,
-                    targetFrameRate = 60,
-                    baseRenderScale = 0.85f,
-                    minRenderScale = 0.80f,
-                    maxRenderScale = 0.90f,
-                    thermalFallbackFrameRate = 30
-                }
-            };
         }
     }
 }

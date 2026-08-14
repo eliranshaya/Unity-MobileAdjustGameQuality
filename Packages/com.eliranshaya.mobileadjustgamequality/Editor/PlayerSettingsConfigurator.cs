@@ -9,13 +9,14 @@ namespace MobileAdjustGameQuality.EditorTools
     /// Applies the recommended mobile Player Settings, one opt-in checkbox at a time.
     /// </summary>
     /// <remarks>
-    /// Player Settings are project-wide and permanent, and a graphics package that
-    /// rewrites someone's scripting backend without asking is a package that gets deleted.
-    /// Every setting here is therefore individually toggleable in the Setup window, and
-    /// every change is written into the run report so it is obvious what moved.
+    /// Player Settings are project-wide and permanent, and a graphics package that rewrites
+    /// someone's scripting backend without asking is a package that gets deleted. Every
+    /// setting is individually toggleable and every change is written into the run report.
     /// </remarks>
     internal static class PlayerSettingsConfigurator
     {
+        const string k_ProjectSettingsPath = "ProjectSettings/ProjectSettings.asset";
+
         /// <summary>Which of the recommended settings to apply.</summary>
         internal class Options
         {
@@ -43,16 +44,19 @@ namespace MobileAdjustGameQuality.EditorTools
             /// <summary>Static and dynamic batching for Android.</summary>
             internal bool batching = true;
 
+            /// <summary>
+            /// Frame Timing Stats. Adaptive Performance needs it to tell a CPU-bound frame
+            /// from a GPU-bound one, and the overlay reports it.
+            /// </summary>
+            internal bool frameTimingStats = true;
+
             /// <summary>True when at least one setting is selected.</summary>
             internal bool Any => optimizedFramePacing || linearColorSpace || graphicsApis
-                                 || multithreadedRendering || il2cpp || arm64 || astcTextures || batching;
+                                 || multithreadedRendering || il2cpp || arm64 || astcTextures
+                                 || batching || frameTimingStats;
         }
 
-        const string k_ProjectSettingsPath = "ProjectSettings/ProjectSettings.asset";
-
-        /// <summary>
-        /// Applies the selected settings.
-        /// </summary>
+        /// <summary>Applies the selected settings.</summary>
         /// <param name="options">Which settings to write.</param>
         /// <param name="report">Run report to record the outcome in.</param>
         internal static void Apply(Options options, SetupReport report)
@@ -60,82 +64,77 @@ namespace MobileAdjustGameQuality.EditorTools
             if (options == null || !options.Any)
                 return;
 
-            if (options.linearColorSpace)
+            if (options.linearColorSpace && PlayerSettings.colorSpace != ColorSpace.Linear)
             {
-                // Changing color space triggers a full shader reimport, which is slow but
-                // is the single most visible correctness fix on this list.
-                if (PlayerSettings.colorSpace != ColorSpace.Linear)
-                {
-                    PlayerSettings.colorSpace = ColorSpace.Linear;
-                    report.Update("Player Settings: Color Space -> Linear (this reimports shaders)");
-                }
+                // Changing color space triggers a full shader reimport, which is slow but is
+                // the single most visible correctness fix on this list.
+                PlayerSettings.colorSpace = ColorSpace.Linear;
+                report.Update("Color Space -> Linear (this reimports shaders)");
             }
 
             if (options.optimizedFramePacing)
             {
                 PlayerSettings.Android.optimizedFramePacing = true;
-                report.Update("Player Settings: Android Optimized Frame Pacing -> on");
+                report.Update("Android: Optimized Frame Pacing -> on");
             }
 
             if (options.graphicsApis)
             {
-                // Order is the priority order Unity tries at startup, so Vulkan first.
+                // Order is the priority Unity tries at startup, so Vulkan first.
                 PlayerSettings.SetUseDefaultGraphicsAPIs(BuildTarget.Android, false);
-                PlayerSettings.SetGraphicsAPIs(BuildTarget.Android, new[]
-                {
-                    GraphicsDeviceType.Vulkan,
-                    GraphicsDeviceType.OpenGLES3
-                });
-                report.Update("Player Settings: Android Graphics APIs -> Vulkan, then GLES3");
+                PlayerSettings.SetGraphicsAPIs(BuildTarget.Android,
+                    new[] { GraphicsDeviceType.Vulkan, GraphicsDeviceType.OpenGLES3 });
+                report.Update("Android: Graphics APIs -> Vulkan, then GLES3");
             }
 
             if (options.multithreadedRendering)
             {
                 PlayerSettings.SetMobileMTRendering(NamedBuildTarget.Android, true);
-                report.Update("Player Settings: Android Multithreaded Rendering -> on");
+                report.Update("Android: Multithreaded Rendering -> on");
             }
 
             if (options.il2cpp)
             {
                 PlayerSettings.SetScriptingBackend(NamedBuildTarget.Android, ScriptingImplementation.IL2CPP);
-                report.Update("Player Settings: Android Scripting Backend -> IL2CPP");
+                report.Update("Android: Scripting Backend -> IL2CPP");
             }
 
             if (options.arm64)
             {
-                // ARM64 only. Google Play has required a 64-bit binary since 2019 and
-                // shipping ARMv7 as well only doubles the download size.
+                // Google Play has required a 64-bit binary since 2019, and shipping ARMv7 as
+                // well only doubles the download size.
                 PlayerSettings.Android.targetArchitectures = AndroidArchitecture.ARM64;
-                report.Update("Player Settings: Android Target Architectures -> ARM64");
+                report.Update("Android: Target Architectures -> ARM64");
             }
 
             if (options.astcTextures)
-                ApplyTextureCompression(report);
+            {
+#if UNITY_2023_1_OR_NEWER
+                PlayerSettings.Android.textureCompressionFormats = new[] { TextureCompressionFormat.ASTC };
+#else
+                EditorUserBuildSettings.androidBuildSubtarget = MobileTextureSubtarget.ASTC;
+#endif
+                report.Update("Android: Texture Compression -> ASTC");
+            }
 
             if (options.batching)
                 ApplyBatching(report);
 
-            AssetDatabase.SaveAssets();
-        }
+            if (options.frameTimingStats && !PlayerSettings.enableFrameTimingStats)
+            {
+                PlayerSettings.enableFrameTimingStats = true;
+                report.Update("Frame Timing Stats -> on");
+            }
 
-        static void ApplyTextureCompression(SetupReport report)
-        {
-#if UNITY_2023_1_OR_NEWER
-            // The per-platform list replaced the single build subtarget; the first entry
-            // is the format the default build uses.
-            PlayerSettings.Android.textureCompressionFormats = new[] { TextureCompressionFormat.ASTC };
-#else
-            EditorUserBuildSettings.androidBuildSubtarget = MobileTextureSubtarget.ASTC;
-#endif
-            report.Update("Build Settings: Android Texture Compression -> ASTC");
+            AssetDatabase.SaveAssets();
         }
 
         static void ApplyBatching(SetupReport report)
         {
             // There is no public API for per-platform batching, so this edits
-            // ProjectSettings.asset directly. The array is keyed by a platform name
-            // string and starts out empty on a fresh project, which is why the entry has
-            // to be found-or-appended rather than indexed.
+            // ProjectSettings.asset directly. The array is keyed by a platform name string
+            // and starts out empty on a fresh project, so the entry has to be found or
+            // appended rather than indexed.
             Object[] assets = AssetDatabase.LoadAllAssetsAtPath(k_ProjectSettingsPath);
             if (assets == null || assets.Length == 0)
             {
@@ -147,14 +146,14 @@ namespace MobileAdjustGameQuality.EditorTools
             SerializedProperty batching = so.FindProperty("m_BuildTargetBatching");
             if (batching == null || !batching.isArray)
             {
-                report.Problem("'m_BuildTargetBatching' is missing from ProjectSettings.asset; batching was left alone.");
+                report.Problem("'m_BuildTargetBatching' is missing; batching was left alone.");
                 return;
             }
 
-            SerializedProperty entry = FindOrAppendPlatform(batching, "Android");
+            SerializedProperty entry = FindOrAppend(batching, "Android");
             if (entry == null)
             {
-                report.Problem("Could not create the Android batching entry; batching was left alone.");
+                report.Problem("Could not create the Android batching entry.");
                 return;
             }
 
@@ -162,16 +161,16 @@ namespace MobileAdjustGameQuality.EditorTools
             SerializedFieldHelper.TrySetRelative(entry, "m_DynamicBatching", "ProjectSettings.Android", 1);
 
             so.ApplyModifiedPropertiesWithoutUndo();
-            report.Update("Player Settings: Android Static + Dynamic Batching -> on");
+            report.Update("Android: Static + Dynamic Batching -> on");
         }
 
-        static SerializedProperty FindOrAppendPlatform(SerializedProperty array, string platformName)
+        static SerializedProperty FindOrAppend(SerializedProperty array, string platform)
         {
             for (int i = 0; i < array.arraySize; i++)
             {
                 SerializedProperty element = array.GetArrayElementAtIndex(i);
                 SerializedProperty target = element.FindPropertyRelative("m_BuildTarget");
-                if (target != null && string.Equals(target.stringValue, platformName, System.StringComparison.Ordinal))
+                if (target != null && string.Equals(target.stringValue, platform, System.StringComparison.Ordinal))
                     return element;
             }
 
@@ -183,7 +182,7 @@ namespace MobileAdjustGameQuality.EditorTools
             if (name == null)
                 return null;
 
-            name.stringValue = platformName;
+            name.stringValue = platform;
             return appended;
         }
     }

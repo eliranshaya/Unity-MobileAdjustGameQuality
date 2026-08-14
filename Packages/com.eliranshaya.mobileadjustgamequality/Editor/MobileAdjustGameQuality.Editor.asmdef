@@ -17,6 +17,12 @@
     "precompiledReferences": [],
     "autoReferenced": true,
     "defineConstraints": [],
-    "versionDefines": [],
+    "versionDefines": [
+        {
+            "name": "com.unity.adaptiveperformance",
+            "expression": "4.0.0",
+            "define": "MAQ_ADAPTIVE_PERFORMANCE"
+        }
+    ],
     "noEngineReferences": false
 }

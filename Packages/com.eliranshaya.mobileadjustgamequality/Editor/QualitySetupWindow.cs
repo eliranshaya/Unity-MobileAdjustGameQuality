@@ -7,32 +7,33 @@ using UnityEngine.Rendering.Universal;
 namespace MobileAdjustGameQuality.EditorTools
 {
     /// <summary>
-    /// The one window the user is expected to open: it generates the URP assets,
-    /// renderers, quality levels, player settings and prefab in a single press.
+    /// The one window you are expected to open. Generates the URP asset, the renderer, the
+    /// quality level, the Player Settings and the prefab in a single press.
     /// </summary>
     public class QualitySetupWindow : EditorWindow
     {
-        // Options
-        bool m_CreateUrpAssets = true;
-        bool m_CreateQualityLevels = true;
-        bool m_ReplaceQualityLevels = true;
+        bool m_CreateAssets = true;
+        bool m_CreateQualityLevel = true;
         bool m_ApplyPlayerSettings = true;
         bool m_CreatePrefab = true;
         bool m_EnableDeveloperMode = true;
         bool m_PlayerSettingsFoldout;
+
         readonly PlayerSettingsConfigurator.Options m_PlayerOptions = new PlayerSettingsConfigurator.Options();
 
-        // Status, refreshed on focus rather than every repaint so the window does not hit
-        // the AssetDatabase sixty times a second while it is just sitting open.
+        // Refreshed on focus rather than every repaint, so an open window does not hit the
+        // AssetDatabase sixty times a second.
         bool m_UrpInstalled;
         string m_UrpVersion;
         bool m_UrpActive;
-        bool m_GeneratedAssetsPresent;
-        bool m_QualityLevelsPresent;
+        bool m_AssetsPresent;
+        bool m_QualityLevelPresent;
         bool m_PrefabPresent;
 
+        readonly List<string> m_DoomedLevels = new List<string>();
+
         SetupReport m_Report;
-        IReadOnlyList<string> m_SkippedFields;
+        IReadOnlyList<string> m_Skipped;
         Vector2 m_Scroll;
 
         /// <summary>Opens the Setup window.</summary>
@@ -40,7 +41,7 @@ namespace MobileAdjustGameQuality.EditorTools
         public static void Open()
         {
             var window = GetWindow<QualitySetupWindow>(false, "Mobile Quality", true);
-            window.minSize = new Vector2(520f, 640f);
+            window.minSize = new Vector2(500f, 600f);
             window.RefreshStatus();
             window.Show();
         }
@@ -70,27 +71,27 @@ namespace MobileAdjustGameQuality.EditorTools
 
             using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
             {
-                DrawCheck(m_UrpInstalled,
-                    m_UrpInstalled ? $"URP package installed (version {m_UrpVersion})" : "URP package not installed");
-                DrawCheck(m_UrpActive, "URP is the active render pipeline in Graphics Settings");
-                DrawCheck(m_GeneratedAssetsPresent, "Generated URP assets and renderers present");
-                DrawCheck(m_QualityLevelsPresent, "MAQ Low / Balanced / High quality levels present");
+                DrawCheck(m_UrpInstalled, m_UrpInstalled ? $"URP installed ({m_UrpVersion})" : "URP not installed");
+                DrawCheck(m_UrpActive, "URP is the active render pipeline");
+                DrawCheck(m_AssetsPresent, "Generated URP asset and renderer present");
+                DrawCheck(m_QualityLevelPresent, $"'{QualityPreset.QualityLevelName}' quality level present");
                 DrawCheck(m_PrefabPresent, "MobileQualityManager prefab present");
+                DrawCheck(DeveloperDefineToggle.IsEnabled, $"{DeveloperDefineToggle.Define} on");
             }
 
             if (!m_UrpInstalled)
             {
                 EditorGUILayout.HelpBox(
-                    "Install com.unity.render-pipelines.universal through the Package Manager before running Setup.",
-                    MessageType.Error);
+                    "Install com.unity.render-pipelines.universal before running Setup.", MessageType.Error);
             }
             else if (!m_UrpActive)
             {
                 EditorGUILayout.HelpBox(
-                    "URP is installed but is not the active pipeline. Assign a Universal Render Pipeline Asset in " +
-                    "Project Settings > Graphics before running Setup, otherwise the generated assets will not be used.",
+                    "URP is installed but is not the active pipeline. Assign a Universal Render Pipeline " +
+                    "Asset in Project Settings > Graphics, otherwise the generated assets will not be used.",
                     MessageType.Warning);
             }
+
         }
 
         static void DrawCheck(bool ok, string label)
@@ -98,7 +99,7 @@ namespace MobileAdjustGameQuality.EditorTools
             using (new EditorGUILayout.HorizontalScope())
             {
                 Color previous = GUI.color;
-                GUI.color = ok ? new Color(0.35f, 0.8f, 0.35f) : new Color(0.9f, 0.4f, 0.4f);
+                GUI.color = ok ? new Color(0.35f, 0.8f, 0.35f) : new Color(0.85f, 0.5f, 0.35f);
                 GUILayout.Label(ok ? "✔" : "✘", GUILayout.Width(16f));
                 GUI.color = previous;
                 GUILayout.Label(label);
@@ -111,30 +112,19 @@ namespace MobileAdjustGameQuality.EditorTools
 
             using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
             {
-                m_CreateUrpAssets = EditorGUILayout.ToggleLeft(
-                    "Create URP assets and renderers", m_CreateUrpAssets);
-                m_CreateQualityLevels = EditorGUILayout.ToggleLeft(
-                    m_ReplaceQualityLevels
-                        ? "Write three quality levels"
-                        : "Add three quality levels (appended, existing untouched)",
-                    m_CreateQualityLevels);
+                m_CreateAssets = EditorGUILayout.ToggleLeft(
+                    "Create the URP asset and renderer", m_CreateAssets);
+                m_CreateQualityLevel = EditorGUILayout.ToggleLeft(
+                    $"Replace all quality levels with '{QualityPreset.QualityLevelName}'", m_CreateQualityLevel);
 
-                using (new EditorGUI.DisabledScope(!m_CreateQualityLevels))
-                {
-                    EditorGUI.indentLevel++;
-                    m_ReplaceQualityLevels = EditorGUILayout.ToggleLeft(
-                        "Replace all quality levels — MAQ becomes 0 / 1 / 2",
-                        m_ReplaceQualityLevels);
-                    EditorGUI.indentLevel--;
-                }
-
-                if (m_CreateQualityLevels && m_ReplaceQualityLevels)
+                if (m_CreateQualityLevel && m_DoomedLevels.Count > 0)
                 {
                     EditorGUILayout.HelpBox(
-                        "Destructive. Every existing quality level is deleted and replaced by MAQ Low, " +
-                        "Balanced and High at indices 0, 1 and 2. You will be asked to confirm, and the " +
-                        "levels that would go are named in the dialog.\n\n" +
-                        "Turn this off to append the three levels after your own instead.",
+                        $"Setup will delete {m_DoomedLevels.Count} existing quality level" +
+                        $"{(m_DoomedLevels.Count == 1 ? "" : "s")}:\n  " +
+                        string.Join("\n  ", m_DoomedLevels) +
+                        "\n\nThis cannot be undone. Anything selecting a quality level by index will " +
+                        "resolve to MAQ Mobile afterwards.",
                         MessageType.Warning);
                 }
 
@@ -144,7 +134,7 @@ namespace MobileAdjustGameQuality.EditorTools
                 using (new EditorGUI.DisabledScope(!m_ApplyPlayerSettings))
                 {
                     EditorGUI.indentLevel++;
-                    m_PlayerSettingsFoldout = EditorGUILayout.Foldout(m_PlayerSettingsFoldout, "Player Settings detail", true);
+                    m_PlayerSettingsFoldout = EditorGUILayout.Foldout(m_PlayerSettingsFoldout, "Detail", true);
                     if (m_PlayerSettingsFoldout)
                     {
                         EditorGUI.indentLevel++;
@@ -153,25 +143,26 @@ namespace MobileAdjustGameQuality.EditorTools
                         m_PlayerOptions.linearColorSpace = EditorGUILayout.ToggleLeft(
                             "Color Space: Linear (reimports shaders)", m_PlayerOptions.linearColorSpace);
                         m_PlayerOptions.graphicsApis = EditorGUILayout.ToggleLeft(
-                            "Android: Graphics APIs Vulkan then GLES3", m_PlayerOptions.graphicsApis);
+                            "Android: Vulkan then GLES3", m_PlayerOptions.graphicsApis);
                         m_PlayerOptions.multithreadedRendering = EditorGUILayout.ToggleLeft(
                             "Android: Multithreaded Rendering", m_PlayerOptions.multithreadedRendering);
                         m_PlayerOptions.il2cpp = EditorGUILayout.ToggleLeft(
-                            "Android: Scripting Backend IL2CPP", m_PlayerOptions.il2cpp);
+                            "Android: IL2CPP", m_PlayerOptions.il2cpp);
                         m_PlayerOptions.arm64 = EditorGUILayout.ToggleLeft(
-                            "Android: Target Architecture ARM64", m_PlayerOptions.arm64);
+                            "Android: ARM64", m_PlayerOptions.arm64);
                         m_PlayerOptions.astcTextures = EditorGUILayout.ToggleLeft(
-                            "Android: Texture Compression ASTC", m_PlayerOptions.astcTextures);
+                            "Android: ASTC textures", m_PlayerOptions.astcTextures);
                         m_PlayerOptions.batching = EditorGUILayout.ToggleLeft(
                             "Android: Static + Dynamic Batching", m_PlayerOptions.batching);
+                        m_PlayerOptions.frameTimingStats = EditorGUILayout.ToggleLeft(
+                            "Frame Timing Stats (CPU/GPU timings)", m_PlayerOptions.frameTimingStats);
                         EditorGUI.indentLevel--;
                     }
 
                     EditorGUI.indentLevel--;
                 }
 
-                m_CreatePrefab = EditorGUILayout.ToggleLeft(
-                    "Create the manager prefab", m_CreatePrefab);
+                m_CreatePrefab = EditorGUILayout.ToggleLeft("Create the manager prefab", m_CreatePrefab);
                 m_EnableDeveloperMode = EditorGUILayout.ToggleLeft(
                     $"Enable {DeveloperDefineToggle.Define} now", m_EnableDeveloperMode);
             }
@@ -179,11 +170,11 @@ namespace MobileAdjustGameQuality.EditorTools
 
         void DrawButtons()
         {
-            bool anythingExists = m_GeneratedAssetsPresent || m_QualityLevelsPresent || m_PrefabPresent;
+            bool anything = m_AssetsPresent || m_QualityLevelPresent || m_PrefabPresent;
 
             using (new EditorGUI.DisabledScope(!m_UrpInstalled))
             {
-                if (GUILayout.Button(anythingExists ? "Update Existing" : "Setup", GUILayout.Height(42f)))
+                if (GUILayout.Button(anything ? "Update Existing" : "Setup", GUILayout.Height(42f)))
                     RunSetup();
             }
 
@@ -194,21 +185,21 @@ namespace MobileAdjustGameQuality.EditorTools
                 if (GUILayout.Button("Create Prefab Only", GUILayout.Height(26f)))
                     RunPrefabOnly();
 
-                using (new EditorGUI.DisabledScope(!m_GeneratedAssetsPresent && !m_PrefabPresent))
+                using (new EditorGUI.DisabledScope(!anything))
                 {
                     if (GUILayout.Button("Select Generated Assets", GUILayout.Height(26f)))
-                        SelectGeneratedAssets();
+                        SelectGenerated();
                 }
             }
 
             EditorGUILayout.Space(4f);
 
-            using (new EditorGUI.DisabledScope(!anythingExists))
+            using (new EditorGUI.DisabledScope(!anything))
             {
                 Color previous = GUI.backgroundColor;
                 GUI.backgroundColor = new Color(1f, 0.6f, 0.6f);
                 if (GUILayout.Button("Remove Everything", GUILayout.Height(26f)))
-                    RunRemoveEverything();
+                    RunRemove();
                 GUI.backgroundColor = previous;
             }
         }
@@ -224,17 +215,16 @@ namespace MobileAdjustGameQuality.EditorTools
             {
                 EditorGUILayout.LabelField($"Unity {Application.unityVersion}   URP {m_UrpVersion ?? "unknown"}");
 
-                DrawReportSection("Created", m_Report.Created);
-                DrawReportSection("Updated", m_Report.Updated);
-                DrawReportSection("Notes", m_Report.Notes);
+                DrawSection("Created", m_Report.Created);
+                DrawSection("Updated", m_Report.Updated);
+                DrawSection("Notes", m_Report.Notes);
 
-                if (m_SkippedFields != null && m_SkippedFields.Count > 0)
+                if (m_Skipped != null && m_Skipped.Count > 0)
                 {
                     EditorGUILayout.Space(4f);
                     EditorGUILayout.HelpBox(
-                        "Skipped on this URP/Unity version - these fields do not exist here and kept their defaults:\n  " +
-                        string.Join("\n  ", m_SkippedFields),
-                        MessageType.Warning);
+                        "Skipped on this URP/Unity version - these fields do not exist here and kept their " +
+                        "defaults:\n  " + string.Join("\n  ", m_Skipped), MessageType.Warning);
                 }
 
                 if (m_Report.HasProblems)
@@ -245,7 +235,7 @@ namespace MobileAdjustGameQuality.EditorTools
             }
         }
 
-        static void DrawReportSection(string title, IReadOnlyList<string> entries)
+        static void DrawSection(string title, IReadOnlyList<string> entries)
         {
             if (entries == null || entries.Count == 0)
                 return;
@@ -257,16 +247,10 @@ namespace MobileAdjustGameQuality.EditorTools
 
         void RunSetup()
         {
-            // Asked before anything at all is written, so cancelling leaves the project
-            // byte-for-byte as it was rather than half-generated.
-            if (m_CreateQualityLevels && m_ReplaceQualityLevels && !ConfirmQualityLevelReplacement())
-                return;
-
             var report = new SetupReport();
             SerializedFieldHelper.BeginRun();
 
-            // Step 1: validate before anything is written.
-            if (!QualityTierPresets.IsUrpInstalled)
+            if (!QualityPreset.IsUrpInstalled)
             {
                 report.Problem("URP is not installed. Nothing was changed.");
                 Finish(report);
@@ -275,111 +259,90 @@ namespace MobileAdjustGameQuality.EditorTools
 
             if (!IsUrpActive())
             {
-                report.Note("URP is not the active pipeline in Graphics Settings. The assets were still " +
-                            "generated, but nothing will use them until a URP asset is assigned there.");
+                report.Note("URP is not the active pipeline in Graphics Settings. The assets were generated, " +
+                            "but nothing will use them until a URP asset is assigned there.");
             }
 
-            var urpAssets = new UniversalRenderPipelineAsset[3];
-            int[] levelIndices = null;
+            UniversalRenderPipelineAsset urpAsset = null;
+            int levelIndex = -1;
 
             try
             {
                 EditorUtility.DisplayProgressBar("Mobile Quality", "Preparing", 0f);
 
-                // Step 2
-                if (!QualityTierPresets.EnsureGeneratedFolder())
+                if (!QualityPreset.EnsureGeneratedFolder())
                 {
-                    report.Problem($"Could not create {QualityTierPresets.GeneratedFolder}. Nothing was generated.");
+                    report.Problem($"Could not create {QualityPreset.GeneratedFolder}.");
                     Finish(report);
                     return;
                 }
 
-                if (m_CreateUrpAssets)
+                if (m_CreateAssets)
                 {
-                    // Batched only around asset creation. Wrapping the prefab save and the
-                    // ProjectSettings edits in the same block gains nothing - neither goes
-                    // through the importer - and prefab saving inside a batch is a known
-                    // source of half-written assets.
+                    // Batched only around asset creation. The prefab save and the
+                    // ProjectSettings edits gain nothing from it, and saving a prefab inside
+                    // a batch is a known source of half-written assets.
                     try
                     {
                         AssetDatabase.StartAssetEditing();
 
-                        // Steps 3 and 4: renderers first, because the URP asset needs one
-                        // to point at when it is created.
-                        for (int tier = 0; tier < 3; tier++)
-                        {
-                            EditorUtility.DisplayProgressBar("Mobile Quality",
-                                $"Creating {QualityTierPresets.TierNames[tier]} renderer", 0.1f + tier * 0.1f);
+                        EditorUtility.DisplayProgressBar("Mobile Quality", "Creating renderer", 0.2f);
+                        UniversalRendererData renderer = AssetFactory.CreateOrUpdateRenderer(report);
 
-                            UniversalRendererData renderer = RendererDataFactory.CreateOrUpdate(tier, report);
-
-                            EditorUtility.DisplayProgressBar("Mobile Quality",
-                                $"Creating {QualityTierPresets.TierNames[tier]} URP asset", 0.15f + tier * 0.1f);
-
-                            urpAssets[tier] = UrpAssetFactory.CreateOrUpdate(tier, renderer, report);
-                        }
+                        EditorUtility.DisplayProgressBar("Mobile Quality", "Creating URP asset", 0.35f);
+                        urpAsset = AssetFactory.CreateOrUpdateUrpAsset(renderer, report);
                     }
                     finally
                     {
                         AssetDatabase.StopAssetEditing();
                     }
 
-                    // Step 5
                     EditorUtility.DisplayProgressBar("Mobile Quality", "Saving assets", 0.5f);
                     AssetDatabase.SaveAssets();
                     AssetDatabase.Refresh();
                 }
                 else
                 {
-                    for (int tier = 0; tier < 3; tier++)
-                        urpAssets[tier] = AssetDatabase.LoadAssetAtPath<UniversalRenderPipelineAsset>(
-                            QualityTierPresets.UrpAssetPath(tier));
+                    urpAsset = AssetDatabase.LoadAssetAtPath<UniversalRenderPipelineAsset>(QualityPreset.UrpAssetPath);
                 }
 
-                // Step 6
-                if (m_CreateQualityLevels)
+                if (m_CreateQualityLevel)
                 {
-                    EditorUtility.DisplayProgressBar("Mobile Quality", "Writing quality levels", 0.6f);
-                    levelIndices = m_ReplaceQualityLevels
-                        ? QualityLevelWriter.ReplaceAll(urpAssets, report)
-                        : QualityLevelWriter.AppendOrUpdate(urpAssets, report);
+                    EditorUtility.DisplayProgressBar("Mobile Quality", "Writing the quality level", 0.65f);
+                    levelIndex = QualityLevelWriter.Write(urpAsset, report);
                 }
                 else
                 {
-                    levelIndices = QualityLevelWriter.FindExistingIndices();
+                    levelIndex = QualityLevelWriter.FindExistingIndex();
                 }
 
-                // Step 7
                 if (m_ApplyPlayerSettings)
                 {
-                    EditorUtility.DisplayProgressBar("Mobile Quality", "Applying Player Settings", 0.75f);
+                    EditorUtility.DisplayProgressBar("Mobile Quality", "Applying Player Settings", 0.8f);
                     PlayerSettingsConfigurator.Apply(m_PlayerOptions, report);
                 }
 
-                // Step 8
                 if (m_CreatePrefab)
                 {
-                    EditorUtility.DisplayProgressBar("Mobile Quality", "Building prefab", 0.9f);
-                    GameObject prefab = QualityPrefabBuilder.Build(levelIndices, report);
+                    EditorUtility.DisplayProgressBar("Mobile Quality", "Building the prefab", 0.92f);
+                    GameObject prefab = QualityPrefabBuilder.Build(levelIndex, report);
                     if (prefab != null)
                     {
-                        // Ping it so the user can see where the one thing they still have
-                        // to do by hand actually landed.
                         EditorGUIUtility.PingObject(prefab);
                         Selection.activeObject = prefab;
                     }
                 }
 
-                if (levelIndices == null || System.Array.IndexOf(levelIndices, -1) >= 0)
+                if (levelIndex < 0)
                 {
-                    report.Note("Quality level indices were not available, so the prefab kept its default " +
-                                "indices. Run Setup with 'Add three quality levels' enabled to fix that.");
+                    report.Note("The quality level index was not available, so the prefab kept its default. " +
+                                "Run Setup with the quality level option enabled to fix that.");
                 }
 
                 if (m_EnableDeveloperMode && !DeveloperDefineToggle.IsEnabled)
                 {
-                    // Last, because it triggers a domain reload and everything above must
-                    // already be written to disk when the scripts reload.
+                    // Last: this triggers a domain reload, and everything above has to be on
+                    // disk before the scripts reload.
                     DeveloperDefineToggle.SetEnabled(true);
                     report.Update($"Scripting define {DeveloperDefineToggle.Define} -> on (Android, iOS, Standalone)");
                 }
@@ -393,49 +356,19 @@ namespace MobileAdjustGameQuality.EditorTools
             Finish(report);
         }
 
-        static bool ConfirmQualityLevelReplacement()
-        {
-            List<string> existing = QualityLevelWriter.ListExistingLevelNames();
-
-            // Only the user's own levels are worth warning about. Overwriting the MAQ
-            // levels this tool created on a previous run is the normal update path and
-            // does not deserve a dialog.
-            var doomed = new List<string>();
-            for (int i = 0; i < existing.Count; i++)
-            {
-                if (System.Array.IndexOf(QualityTierPresets.QualityLevelNames, existing[i]) < 0)
-                    doomed.Add($"{i}: {existing[i]}");
-            }
-
-            if (doomed.Count == 0)
-                return true;
-
-            string message =
-                $"Setup is set to replace all quality levels, so these {doomed.Count} will be deleted:\n\n  " +
-                string.Join("\n  ", doomed) +
-                "\n\nThey will be replaced by MAQ Low, MAQ Balanced and MAQ High at indices 0, 1 and 2, " +
-                "each pointing at its generated URP asset.\n\n" +
-                "This cannot be undone. Anything referring to a deleted level by index will now resolve to " +
-                "a MAQ level instead.\n\n" +
-                "To keep your levels and add the three new ones after them, cancel and turn off " +
-                "'Replace all quality levels'.";
-
-            return EditorUtility.DisplayDialog("Replace all quality levels?", message, "Replace", "Cancel");
-        }
-
         void RunPrefabOnly()
         {
             var report = new SetupReport();
             SerializedFieldHelper.BeginRun();
 
-            int[] indices = QualityLevelWriter.FindExistingIndices();
-            if (indices == null || System.Array.IndexOf(indices, -1) >= 0)
+            int index = QualityLevelWriter.FindExistingIndex();
+            if (index < 0)
             {
-                report.Note("The MAQ quality levels do not all exist yet, so the prefab was built with " +
-                            "preset indices. Run the full Setup to write the real ones.");
+                report.Note($"The '{QualityPreset.QualityLevelName}' quality level does not exist yet, so the " +
+                            "prefab was built with the component's default index. Run the full Setup.");
             }
 
-            GameObject prefab = QualityPrefabBuilder.Build(indices, report);
+            GameObject prefab = QualityPrefabBuilder.Build(index, report);
             if (prefab != null)
             {
                 EditorGUIUtility.PingObject(prefab);
@@ -446,37 +379,26 @@ namespace MobileAdjustGameQuality.EditorTools
             Finish(report);
         }
 
-        void RunRemoveEverything()
+        void RunRemove()
         {
             var paths = new List<string>();
-            for (int tier = 0; tier < 3; tier++)
+            foreach (string path in QualityPreset.GeneratedPaths)
             {
-                AddIfExists(paths, QualityTierPresets.UrpAssetPath(tier));
-                AddIfExists(paths, QualityTierPresets.RendererPath(tier));
+                if (AssetDatabase.LoadMainAssetAtPath(path) != null)
+                    paths.Add(path);
             }
 
-            AddIfExists(paths, QualityTierPresets.PrefabPath);
-
-            int[] indices = QualityLevelWriter.FindExistingIndices();
-            var levelNames = new List<string>();
-            if (indices != null)
-            {
-                for (int tier = 0; tier < 3; tier++)
-                {
-                    if (indices[tier] >= 0)
-                        levelNames.Add($"{QualityTierPresets.QualityLevelNames[tier]} (index {indices[tier]})");
-                }
-            }
+            int levelIndex = QualityLevelWriter.FindExistingIndex();
 
             string message =
                 "This will delete:\n\n" +
                 (paths.Count > 0 ? "  " + string.Join("\n  ", paths) : "  (no generated assets)") +
-                "\n\nand remove these quality levels:\n\n" +
-                (levelNames.Count > 0 ? "  " + string.Join("\n  ", levelNames) : "  (none)") +
+                "\n\nand remove the quality level:\n\n" +
+                (levelIndex >= 0 ? $"  {QualityPreset.QualityLevelName} (index {levelIndex})" : "  (none)") +
                 "\n\nNothing else is touched: your own quality levels, Player Settings and Graphics Settings " +
                 "stay exactly as they are.\n\n" +
-                "If one of the generated URP assets is currently assigned in Graphics Settings, assign a " +
-                "different one first or the project will have no active pipeline.";
+                "If the generated URP asset is currently assigned in Graphics Settings, assign a different " +
+                "one first or the project will have no active pipeline.";
 
             if (!EditorUtility.DisplayDialog("Remove Mobile Quality setup?", message, "Delete", "Cancel"))
                 return;
@@ -492,29 +414,22 @@ namespace MobileAdjustGameQuality.EditorTools
                     report.Problem($"Could not delete {path}.");
             }
 
-            QualityLevelWriter.RemoveGeneratedLevels(report);
+            QualityLevelWriter.Remove(report);
 
             AssetDatabase.SaveAssets();
             AssetDatabase.Refresh();
             Finish(report);
         }
 
-        static void AddIfExists(List<string> paths, string path)
-        {
-            if (AssetDatabase.LoadMainAssetAtPath(path) != null)
-                paths.Add(path);
-        }
-
-        void SelectGeneratedAssets()
+        void SelectGenerated()
         {
             var objects = new List<Object>();
-            for (int tier = 0; tier < 3; tier++)
+            foreach (string path in QualityPreset.GeneratedPaths)
             {
-                AddObject(objects, QualityTierPresets.UrpAssetPath(tier));
-                AddObject(objects, QualityTierPresets.RendererPath(tier));
+                Object asset = AssetDatabase.LoadMainAssetAtPath(path);
+                if (asset != null)
+                    objects.Add(asset);
             }
-
-            AddObject(objects, QualityTierPresets.PrefabPath);
 
             if (objects.Count == 0)
                 return;
@@ -523,45 +438,37 @@ namespace MobileAdjustGameQuality.EditorTools
             EditorGUIUtility.PingObject(objects[objects.Count - 1]);
         }
 
-        static void AddObject(List<Object> objects, string path)
-        {
-            Object asset = AssetDatabase.LoadMainAssetAtPath(path);
-            if (asset != null)
-                objects.Add(asset);
-        }
-
         void Finish(SetupReport report)
         {
             m_Report = report;
-            m_SkippedFields = SerializedFieldHelper.Skipped;
+            m_Skipped = SerializedFieldHelper.Skipped;
             RefreshStatus();
             Repaint();
         }
 
         void RefreshStatus()
         {
-            m_UrpInstalled = QualityTierPresets.IsUrpInstalled;
-            m_UrpVersion = QualityTierPresets.UrpVersion;
+            m_UrpInstalled = QualityPreset.IsUrpInstalled;
+            m_UrpVersion = QualityPreset.UrpVersion;
             m_UrpActive = IsUrpActive();
 
-            m_GeneratedAssetsPresent = true;
-            for (int tier = 0; tier < 3 && m_GeneratedAssetsPresent; tier++)
+            m_AssetsPresent =
+                AssetDatabase.LoadAssetAtPath<UniversalRenderPipelineAsset>(QualityPreset.UrpAssetPath) != null &&
+                AssetDatabase.LoadAssetAtPath<UniversalRendererData>(QualityPreset.RendererPath) != null;
+
+            m_QualityLevelPresent = QualityLevelWriter.FindExistingIndex() >= 0;
+
+            m_DoomedLevels.Clear();
+            foreach (string name in QualityLevelWriter.ListExistingNames())
             {
-                m_GeneratedAssetsPresent =
-                    AssetDatabase.LoadAssetAtPath<UniversalRenderPipelineAsset>(QualityTierPresets.UrpAssetPath(tier)) != null &&
-                    AssetDatabase.LoadAssetAtPath<UniversalRendererData>(QualityTierPresets.RendererPath(tier)) != null;
+                if (name != QualityPreset.QualityLevelName)
+                    m_DoomedLevels.Add(name);
             }
-
-            int[] indices = QualityLevelWriter.FindExistingIndices();
-            m_QualityLevelsPresent = indices != null && System.Array.IndexOf(indices, -1) < 0;
-
-            m_PrefabPresent = AssetDatabase.LoadAssetAtPath<GameObject>(QualityTierPresets.PrefabPath) != null;
+            m_PrefabPresent = AssetDatabase.LoadAssetAtPath<GameObject>(QualityPreset.PrefabPath) != null;
         }
 
-        static bool IsUrpActive()
-        {
-            return QualitySettings.renderPipeline is UniversalRenderPipelineAsset
-                   || GraphicsSettings.defaultRenderPipeline is UniversalRenderPipelineAsset;
-        }
+        static bool IsUrpActive() =>
+            QualitySettings.renderPipeline is UniversalRenderPipelineAsset ||
+            GraphicsSettings.defaultRenderPipeline is UniversalRenderPipelineAsset;
     }
 }

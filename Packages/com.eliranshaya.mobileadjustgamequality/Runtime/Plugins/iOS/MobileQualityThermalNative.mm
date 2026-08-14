@@ -3,16 +3,15 @@
 // Native iOS side of com.eliranshaya.mobileadjustgamequality.
 //
 // Unity does not surface NSProcessInfo.thermalState to managed code, and there is no other
-// way to ask iOS how hot it is. Six lines of Objective-C++ is the whole gap.
+// way to ask iOS how hot it is. These few lines are the whole gap.
 //
 // The exported symbol is prefixed _MAQ_ on purpose. A generic name like _GetThermalState
-// collides at link time with any other package that bridges the same API, and a
-// duplicate-symbol error in Xcode is exactly the kind of failure this package should not be
-// causing in somebody else's project.
+// collides at link time with any other package bridging the same API, and a duplicate-symbol
+// error in Xcode is exactly the failure this package should not be causing in somebody
+// else's project.
 //
-// Foundation is always linked into UnityFramework, so unlike CoreHaptics this needs no
-// framework added to the Xcode project - MobileQualityThermalIOSPostProcess only verifies
-// that this file reached the project's Compile Sources.
+// Foundation is always linked into UnityFramework, so this needs no framework added to the
+// Xcode project - MobileQualityThermalIOSPostProcess only verifies the file reached it.
 
 #import <Foundation/Foundation.h>
 
@@ -22,9 +21,9 @@
 //   2 serious   - performance is being reduced; reduce work now
 //   3 critical  - the device needs to cool down immediately
 //
-// Returns -1 when the API is unavailable, which ThermalSensor reads as Unknown and falls
-// back to frame times alone. thermalState is iOS 11+, below every deployment target URP 14
-// supports, but the check costs nothing and keeps the contract explicit.
+// Returns -1 when the API is unavailable, which ThermalSensor reads as Unknown. thermalState
+// is iOS 11+, below every deployment target URP 14 supports, but the check costs nothing and
+// keeps the contract explicit.
 extern "C" int MAQ_GetThermalState()
 {
     if (@available(iOS 11.0, tvOS 11.0, *))

@@ -3,72 +3,57 @@ using UnityEngine;
 
 namespace MobileAdjustGameQuality
 {
-    /// <summary>
-    /// How hot the operating system reports the device to be.
-    /// </summary>
+    /// <summary>How hot the operating system reports the device to be.</summary>
     /// <remarks>
-    /// These are <b>not</b> temperatures. Android does not expose a number in degrees to
-    /// applications, and deliberately so: the temperature at which one phone throttles is
+    /// These are <b>not</b> temperatures. Neither platform gives applications a number in
+    /// degrees, and deliberately so: the temperature at which one phone throttles is
     /// meaningless on another, because it depends on the chassis, the cooling and the
-    /// vendor's own policy. What the OS gives instead is its own verdict about how much it
-    /// is currently holding the hardware back.
-    /// <para>
-    /// Mirrors Android's <c>PowerManager.THERMAL_STATUS_*</c> for values 0-4; Android also
-    /// defines EMERGENCY (5) and SHUTDOWN (6), which are clamped to <see cref="Critical"/>
-    /// because at that point the OS is about to kill the process and no render scale will
-    /// help.
-    /// </para>
-    /// <para>
-    /// iOS has four states rather than five, so <c>NSProcessInfo.thermalState</c> maps as
-    /// nominal to <see cref="None"/>, fair to <see cref="Light"/>, serious to
-    /// <see cref="Severe"/> and critical to <see cref="Critical"/>. Nothing maps to
-    /// <see cref="Moderate"/> on iOS: Apple's "serious" already means "reduce work now",
-    /// which is the same instruction Android's SEVERE carries.
-    /// </para>
+    /// vendor's own policy. What you get instead is the OS's own verdict about how much it
+    /// is holding the hardware back.
     /// </remarks>
     public enum ThermalLevel
     {
         /// <summary>No thermal API on this platform, or the query failed.</summary>
         Unknown = -1,
 
-        /// <summary>No throttling at all.</summary>
+        /// <summary>No throttling.</summary>
         None = 0,
 
-        /// <summary>Light throttling. The player cannot see it yet, but headroom is gone.</summary>
+        /// <summary>Throttling has started. Stop raising quality.</summary>
         Light = 1,
 
-        /// <summary>Moderate throttling. Frame times start to drift.</summary>
+        /// <summary>Frame times are drifting.</summary>
         Moderate = 2,
 
-        /// <summary>Severe throttling. The OS is actively clocking the chip down.</summary>
+        /// <summary>The OS is actively clocking down. Give quality back.</summary>
         Severe = 3,
 
-        /// <summary>Critical. Give quality back immediately.</summary>
+        /// <summary>Critical. Give quality back now.</summary>
         Critical = 4
     }
 
     /// <summary>
-    /// Reads the platform thermal API so the adaptive loop can tell "this device is slow"
-    /// apart from "this device got hot".
+    /// Reads the platform thermal API on Android and iOS.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// The distinction decides the response. A slow device should settle at a lower render
-    /// scale and stay there. A hot device should be given quality back and then allowed to
-    /// climb again once it cools. Frame times alone cannot separate the two.
+    /// Temperature is the one signal in this package that never lies. Frame time cannot show
+    /// spare capacity while a frame cap is active - the engine sleeps until the frame is due,
+    /// so a device holding its target reports exactly the budget however much headroom it
+    /// has. Thermal state has no such blind spot: it says outright how close the device is to
+    /// being throttled, and it says it the same way whether the game is capped or not.
     /// </para>
     /// <para>
-    /// Plain class rather than a MonoBehaviour: it owns JNI handles and a poll method, and
-    /// nothing else. <see cref="MobileQualityManager"/> calls <see cref="Poll"/> from a
-    /// coroutine and disposes it on destroy.
+    /// Plain class rather than a MonoBehaviour: it owns a couple of handles and a poll
+    /// method, and nothing else.
     /// </para>
     /// </remarks>
     public sealed class ThermalSensor : IDisposable
     {
         /// <summary>
         /// Headroom is a forecast on a 0..1+ scale where 1.0 means "throttling right now".
-        /// Treating 0.85 as warm buys the loop a few seconds of warning before the OS acts,
-        /// which is the difference between holding quality and having it taken away.
+        /// Treating 0.85 as warm buys a few seconds of warning before the OS acts, which is
+        /// the difference between shedding load on our terms and having it taken.
         /// </summary>
         public const float WarmHeadroom = 0.85f;
 
@@ -83,11 +68,10 @@ namespace MobileAdjustGameQuality
 #endif
 
 #if UNITY_IOS && !UNITY_EDITOR
-        // Implemented in Runtime/Plugins/iOS/MobileQualityThermalNative.mm, which the
-        // package ships and MobileQualityThermalIOSPostProcess verifies reached the Xcode
-        // project. The symbol is prefixed _MAQ_ on purpose: a generic name like
-        // _GetThermalState would collide at link time with any other package doing the same
-        // thing, and a duplicate-symbol error in Xcode is a miserable thing to debug.
+        // Implemented in Runtime/Plugins/iOS/MobileQualityThermalNative.mm. The symbol is
+        // prefixed _MAQ_ on purpose: a generic name like _GetThermalState collides at link
+        // time with any other package bridging the same API, and a duplicate-symbol error in
+        // Xcode is a miserable thing to debug in someone else's project.
         [System.Runtime.InteropServices.DllImport("__Internal")]
         static extern int MAQ_GetThermalState();
 
@@ -98,8 +82,8 @@ namespace MobileAdjustGameQuality
         public ThermalLevel Level { get; private set; } = ThermalLevel.Unknown;
 
         /// <summary>
-        /// The most recent headroom forecast, or <c>NaN</c> when unavailable. Approaching
-        /// 1.0 means throttling is imminent.
+        /// The most recent headroom forecast, or <c>NaN</c> when unavailable. Android only;
+        /// Apple exposes no equivalent.
         /// </summary>
         public float Headroom { get; private set; } = float.NaN;
 
@@ -107,8 +91,8 @@ namespace MobileAdjustGameQuality
         public bool IsAvailable => Level != ThermalLevel.Unknown || !float.IsNaN(Headroom);
 
         /// <summary>
-        /// True when quality must not be raised. Deliberately conservative: stepping up on
-        /// a warm device is the change most likely to be undone seconds later.
+        /// True when quality must not be raised. Deliberately early: raising quality on a
+        /// warming device is the change most likely to be undone seconds later.
         /// </summary>
         public bool IsWarm
         {
@@ -131,17 +115,19 @@ namespace MobileAdjustGameQuality
             }
         }
 
+        /// <summary>True when it is safe to raise quality.</summary>
+        public bool IsCool => !IsWarm;
+
         /// <summary>
-        /// Acquires the platform handles. Safe to call on any platform; does nothing where
-        /// there is nothing to acquire - iOS needs no setup, because the bundled plugin
-        /// reads a process-wide property with no handle to hold.
+        /// Acquires platform handles. Safe everywhere; does nothing where there is nothing to
+        /// acquire - iOS needs no setup, because the plugin reads a process-wide property.
         /// </summary>
         public void Open()
         {
 #if UNITY_ANDROID && !UNITY_EDITOR
-            // Every JNI call is wrapped: several OEM ROMs throw from getSystemService or
-            // from the thermal methods themselves, and an uncaught exception during startup
-            // takes the whole app down.
+            // Every JNI call is wrapped: several OEM ROMs throw from getSystemService or from
+            // the thermal methods themselves, and an uncaught exception during startup takes
+            // the whole app down.
             try
             {
                 using (var versionClass = new AndroidJavaClass("android.os.Build$VERSION"))
@@ -156,13 +142,13 @@ namespace MobileAdjustGameQuality
             catch (Exception e)
             {
                 m_Failed = true;
-                QualityDevLog.Warn($"Thermal API unavailable, falling back to frame times only: {e.Message}");
+                QualityDevLog.Warn($"Thermal API unavailable; adapting from frame times only: {e.Message}");
                 Dispose();
             }
 #endif
         }
 
-        /// <summary>Reads the current thermal state. Cheap, and safe to call from a coroutine.</summary>
+        /// <summary>Reads the current thermal state. Cheap, and safe from a coroutine.</summary>
         public void Poll()
         {
 #if UNITY_ANDROID && !UNITY_EDITOR
@@ -171,21 +157,20 @@ namespace MobileAdjustGameQuality
 
             try
             {
-                // getCurrentThermalStatus() is API 29 (Android 10).
+                // getCurrentThermalStatus() is API 29 (Android 10). Android also defines
+                // EMERGENCY (5) and SHUTDOWN (6); both clamp to Critical, because at that
+                // point the OS is about to kill the process and no render scale will help.
                 if (m_ApiLevel >= 29)
-                {
-                    int status = m_PowerManager.Call<int>("getCurrentThermalStatus");
-                    Level = (ThermalLevel)Mathf.Clamp(status, 0, 4);
-                }
+                    Level = (ThermalLevel)Mathf.Clamp(m_PowerManager.Call<int>("getCurrentThermalStatus"), 0, 4);
 
-                // getThermalHeadroom() is API 30 (Android 11) and is the better signal:
-                // it is a forecast, so it moves before the status does.
+                // getThermalHeadroom() is API 30 (Android 11) and is the better signal: it is
+                // a forecast, so it moves before the status does.
                 if (m_ApiLevel >= 30)
                 {
                     float headroom = m_PowerManager.Call<float>("getThermalHeadroom", k_HeadroomForecastSeconds);
 
-                    // NaN means "polled too fast" or "no prediction yet". Keep the last
-                    // good value rather than reading NaN as cool.
+                    // NaN means "polled too fast" or "no prediction yet". Keep the last good
+                    // value rather than reading NaN as cool.
                     if (!float.IsNaN(headroom) && !float.IsInfinity(headroom))
                         Headroom = headroom;
                 }
@@ -207,9 +192,9 @@ namespace MobileAdjustGameQuality
 
             try
             {
-                // NSProcessInfo.thermalState, through the bundled .mm. Four states, not
-                // Android's five, and no headroom equivalent - Apple exposes no forecast, so
-                // Headroom stays NaN on iOS and every decision runs off the status alone.
+                // NSProcessInfo.thermalState. Four states rather than Android's five, and no
+                // headroom equivalent - Apple exposes no forecast - so Headroom stays NaN and
+                // every decision on iOS runs off the status alone.
                 int state = MAQ_GetThermalState();
 
                 Level = state <= 0 ? ThermalLevel.None
@@ -219,14 +204,14 @@ namespace MobileAdjustGameQuality
             }
             catch (Exception e)
             {
-                // The only realistic cause is the .mm not making it into the build, which
-                // throws EntryPointNotFoundException on the first call. Failing once and
-                // going quiet beats an exception every five seconds for the whole session.
+                // The realistic cause is the .mm not reaching the build, which throws
+                // EntryPointNotFoundException on the first call. Failing once and going quiet
+                // beats an exception every second for the whole session.
                 m_Failed = true;
                 Level = ThermalLevel.Unknown;
                 QualityDevLog.Warn(
-                    $"iOS thermal query failed, disabling thermal input: {e.Message}. " +
-                    "MobileQualityThermalNative.mm is probably missing from the Xcode project.");
+                    $"iOS thermal query failed: {e.Message}. MobileQualityThermalNative.mm is " +
+                    "probably missing from the Xcode project.");
             }
 #endif
         }

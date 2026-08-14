@@ -2,15 +2,7 @@ using System.Collections.Generic;
 
 namespace MobileAdjustGameQuality.EditorTools
 {
-    /// <summary>
-    /// Collects what a Setup run did so the window can show it afterwards.
-    /// </summary>
-    /// <remarks>
-    /// This is not in the file list the specification gives; it exists because the
-    /// factories, the quality level writer, the player settings configurator and the
-    /// prefab builder all need somewhere to record their results, and threading a
-    /// <c>List&lt;string&gt;</c> through every signature would be worse.
-    /// </remarks>
+    /// <summary>Collects what a Setup run did so the window can show it afterwards.</summary>
     internal class SetupReport
     {
         readonly List<string> m_Created = new List<string>();

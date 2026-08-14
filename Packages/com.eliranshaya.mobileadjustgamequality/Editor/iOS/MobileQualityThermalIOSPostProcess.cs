@@ -5,8 +5,8 @@ using UnityEditor.Callbacks;
 using UnityEditor.iOS.Xcode;
 using UnityEngine;
 
-// The namespace is deliberately not ...EditorTools.iOS: a namespace segment named "iOS" makes
-// the compiler resolve UnityEditor.iOS.Xcode against it and fail.
+// The namespace is deliberately not ...EditorTools.iOS: a namespace segment named "iOS"
+// makes the compiler resolve UnityEditor.iOS.Xcode against it and fail.
 namespace MobileAdjustGameQuality.EditorTools
 {
     /// <summary>
@@ -15,18 +15,15 @@ namespace MobileAdjustGameQuality.EditorTools
     /// </summary>
     /// <remarks>
     /// <para>
-    /// One job: verify <c>MobileQualityThermalNative.mm</c> actually reached the project,
-    /// and put it there if it did not. A stale package cache or a mangled <c>.meta</c>
-    /// silently drops the plugin, and the symptom is "thermal never reports anything on
-    /// iOS" with a completely clean build log.
+    /// One job: verify <c>MobileQualityThermalNative.mm</c> reached the project, and put it
+    /// there if it did not. A stale package cache or a mangled <c>.meta</c> silently drops
+    /// the plugin, and the symptom is "thermal never reports anything on iOS" with a
+    /// completely clean build log.
     /// </para>
     /// <para>
-    /// No framework is linked, unlike a Core Haptics bridge would need: the plugin only
-    /// touches <c>NSProcessInfo</c>, and Foundation is always linked into UnityFramework.
-    /// Adding a framework here just to look thorough would be noise in someone's project.
-    /// </para>
-    /// <para>
-    /// Both outcomes are logged. Silence is what makes this class of bug undiagnosable.
+    /// No framework is linked: the plugin only touches <c>NSProcessInfo</c>, and Foundation
+    /// is always linked into UnityFramework. Adding one just to look thorough would be noise
+    /// in someone's project.
     /// </para>
     /// <para>
     /// The assembly is constrained to <c>UNITY_IOS</c> so it is not compiled at all - and
@@ -83,10 +80,10 @@ namespace MobileAdjustGameQuality.EditorTools
             string frameworkTarget = project.GetUnityFrameworkTargetGuid();
 
             bool present = project.ContainsFileByProjectPath(RepairedProjectPath())
-                           || ProjectContainsNativeSource(projectPath);
+                           || File.ReadAllText(projectPath).Contains(k_NativeSourceName);
 
             if (!present)
-                RepairMissingSource(project, frameworkTarget, pathToBuiltProject);
+                Repair(project, frameworkTarget, pathToBuiltProject);
 
             project.WriteToFile(projectPath);
 
@@ -94,34 +91,24 @@ namespace MobileAdjustGameQuality.EditorTools
                       $"{(present ? "already in the project" : "was missing and has been added to UnityFramework")}.");
         }
 
-        /// <summary>
-        /// Looks for the plugin anywhere in the pbxproj. Reading the file as text rather than
-        /// walking the build phases is deliberate: it finds the plugin under whatever path
-        /// Unity chose for it, across every Unity version.
-        /// </summary>
-        static bool ProjectContainsNativeSource(string projectPath) =>
-            File.ReadAllText(projectPath).Contains(k_NativeSourceName);
-
         static string RepairedProjectPath() => k_RepairDirectory + "/" + k_NativeSourceName;
 
-        static void RepairMissingSource(PBXProject project, string frameworkTarget, string buildPath)
+        static void Repair(PBXProject project, string frameworkTarget, string buildPath)
         {
             string source = ResolveSourcePath();
             if (source == null)
             {
                 Debug.LogError(
-                    $"{k_LogPrefix}{k_NativeSourceName} is neither in the Xcode project nor findable in the " +
-                    "package. Thermal state will read as Unknown on device.");
+                    $"{k_LogPrefix}{k_NativeSourceName} is neither in the Xcode project nor findable in " +
+                    "the package. Thermal state will read as Unknown on device.");
                 return;
             }
 
             string destinationDirectory = Path.Combine(buildPath, k_RepairDirectory);
             Directory.CreateDirectory(destinationDirectory);
 
-            string destination = Path.Combine(destinationDirectory, k_NativeSourceName);
-
             // overwrite: Append builds reuse the directory from the previous build.
-            File.Copy(source, destination, true);
+            File.Copy(source, Path.Combine(destinationDirectory, k_NativeSourceName), true);
 
             string fileGuid = project.AddFile(RepairedProjectPath(), RepairedProjectPath(), PBXSourceTree.Source);
             project.AddFileToBuild(frameworkTarget, fileGuid);
@@ -134,8 +121,8 @@ namespace MobileAdjustGameQuality.EditorTools
 
         /// <summary>
         /// Resolves the plugin by the GUID pinned in its .meta, falling back to the package
-        /// path. The GUID survives the package being relocated, embedded or renamed; the path
-        /// survives the asset database not knowing about the file at all.
+        /// path. The GUID survives the package being relocated or embedded; the path survives
+        /// the asset database not knowing about the file at all.
         /// </summary>
         static string ResolveSourcePath()
         {

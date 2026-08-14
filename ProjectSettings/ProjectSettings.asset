@@ -154,7 +154,7 @@ PlayerSettings:
   vrSettings:
     enable360StereoCapture: 0
   isWsaHolographicRemotingEnabled: 0
-  enableFrameTimingStats: 0
+  enableFrameTimingStats: 1
   enableOpenGLProfilerGPURecorders: 1
   allowHDRDisplaySupport: 0
   useHDRDisplay: 0
@@ -836,9 +836,9 @@ PlayerSettings:
   webWasm2023: 0
   webEnableSubmoduleStrippingCompatibility: 0
   scriptingDefineSymbols:
-    Android: DEVELOPER_MODE
-    Standalone: DEVELOPER_MODE
-    iPhone: DEVELOPER_MODE
+    Android: DEVELOPER_MODE;MAQ_DEVELOPER_MODE
+    Standalone: DEVELOPER_MODE;MAQ_DEVELOPER_MODE
+    iPhone: DEVELOPER_MODE;MAQ_DEVELOPER_MODE
   additionalCompilerArguments: {}
   platformArchitecture: {}
   scriptingBackend:
