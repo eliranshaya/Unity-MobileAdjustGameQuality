@@ -33,6 +33,10 @@ namespace MobileAdjustGameQuality
     [DisallowMultipleComponent]
     public class QualityDebugOverlay : MonoBehaviour
     {
+        const string k_Title = "MOBILE QUALITY";
+        const string k_CloseLabel = "X";
+        const string k_OpenLabel = "MAQ";
+
         const int k_TapsToToggle = 4;
         const float k_TapWindowSeconds = 2f;
         const float k_TapCornerSize = 96f;
@@ -46,16 +50,26 @@ namespace MobileAdjustGameQuality
         bool m_Visible = true;
         int m_TapCount;
         float m_FirstTapTime;
-        Rect m_PanelRect;
+
+        /// <summary>
+        /// Whatever the overlay currently occupies - the panel when open, the open button
+        /// when closed. Used to keep the corner-tap gesture from stealing clicks from it.
+        /// </summary>
+        Rect m_OccupiedRect;
 
         GUIStyle m_Panel;
         GUIStyle m_Text;
+        GUIStyle m_Title;
+        GUIStyle m_Button;
         Texture2D m_PanelTexture;
         float m_TextureOpacity = -1f;
 
         void Awake()
         {
             m_Manager = GetComponent<MobileQualityManager>();
+
+            OverlaySettings settings = m_Manager != null ? m_Manager.Overlay : null;
+            m_Visible = settings == null || settings.openOnStart;
         }
 
         void OnDestroy()
@@ -76,16 +90,41 @@ namespace MobileAdjustGameQuality
             EnsureStyles(settings);
             HandleToggleInput();
 
-            if (!m_Visible)
-                return;
-
             if (Event.current.type == EventType.Layout)
             {
-                BuildLines(settings);
-                m_PanelRect = Measure(settings);
+                if (m_Visible)
+                {
+                    BuildLines(settings);
+                    m_OccupiedRect = MeasurePanel(settings);
+                }
+                else
+                {
+                    m_OccupiedRect = settings.showToggleButton ? MeasureOpenButton(settings) : Rect.zero;
+                }
             }
 
-            GUILayout.BeginArea(m_PanelRect, m_Panel);
+            if (!m_Visible)
+            {
+                if (settings.showToggleButton && GUI.Button(m_OccupiedRect, k_OpenLabel, m_Button))
+                    m_Visible = true;
+                return;
+            }
+
+            DrawPanel(settings);
+        }
+
+        void DrawPanel(OverlaySettings settings)
+        {
+            GUILayout.BeginArea(m_OccupiedRect, m_Panel);
+
+            float rowHeight = m_Text.fontSize * 1.8f;
+
+            GUILayout.BeginHorizontal();
+            GUILayout.Label(k_Title, m_Title);
+            GUILayout.FlexibleSpace();
+            if (GUILayout.Button(k_CloseLabel, m_Button, GUILayout.Width(rowHeight), GUILayout.Height(rowHeight)))
+                m_Visible = false;
+            GUILayout.EndHorizontal();
 
             for (int i = 0; i < m_Lines.Count; i++)
                 GUILayout.Label(m_Lines[i], m_Text);
@@ -96,11 +135,11 @@ namespace MobileAdjustGameQuality
 
                 GUILayout.Space(m_Text.fontSize * 0.4f);
                 GUILayout.BeginHorizontal();
-                if (GUILayout.Button("Low", GUILayout.Height(buttonHeight)))
+                if (GUILayout.Button("Low", m_Button, GUILayout.Height(buttonHeight)))
                     m_Manager.SetTier(QualityTier.Low);
-                if (GUILayout.Button("Balanced", GUILayout.Height(buttonHeight)))
+                if (GUILayout.Button("Balanced", m_Button, GUILayout.Height(buttonHeight)))
                     m_Manager.SetTier(QualityTier.Balanced);
-                if (GUILayout.Button("High", GUILayout.Height(buttonHeight)))
+                if (GUILayout.Button("High", m_Button, GUILayout.Height(buttonHeight)))
                     m_Manager.SetTier(QualityTier.High);
                 GUILayout.EndHorizontal();
             }
@@ -176,10 +215,10 @@ namespace MobileAdjustGameQuality
         /// </summary>
         /// <param name="settings">Current overlay settings.</param>
         /// <returns>The rect to draw the panel in.</returns>
-        Rect Measure(OverlaySettings settings)
+        Rect MeasurePanel(OverlaySettings settings)
         {
-            float width = 0f;
             var content = new GUIContent();
+            float width = 0f;
 
             for (int i = 0; i < m_Lines.Count; i++)
             {
@@ -189,8 +228,16 @@ namespace MobileAdjustGameQuality
                     width = lineWidth;
             }
 
+            float rowHeight = m_Text.fontSize * 1.8f;
+
+            // Header: title, a gap, then the square close button.
+            content.text = k_Title;
+            float headerWidth = m_Title.CalcSize(content).x + rowHeight * 1.5f;
+            if (headerWidth > width)
+                width = headerWidth;
+
             float lineHeight = m_Text.lineHeight > 0f ? m_Text.lineHeight : m_Text.fontSize * 1.2f;
-            float height = m_Lines.Count * lineHeight;
+            float height = rowHeight + m_Lines.Count * lineHeight;
 
             if (settings.showTierButtons)
             {
@@ -200,10 +247,28 @@ namespace MobileAdjustGameQuality
                     width = buttonRowWidth;
             }
 
-            RectOffset padding = m_Panel.padding;
-            width += padding.left + padding.right;
-            height += padding.top + padding.bottom;
+            return AnchoredRect(settings, WithPadding(width), WithPadding(height, vertical: true));
+        }
 
+        Rect MeasureOpenButton(OverlaySettings settings)
+        {
+            var content = new GUIContent(k_OpenLabel);
+            Vector2 size = m_Button.CalcSize(content);
+
+            float width = Mathf.Max(size.x, m_Text.fontSize * 3.5f);
+            float height = Mathf.Max(size.y, m_Text.fontSize * 1.9f);
+
+            return AnchoredRect(settings, width, height);
+        }
+
+        float WithPadding(float value, bool vertical = false)
+        {
+            RectOffset padding = m_Panel.padding;
+            return value + (vertical ? padding.top + padding.bottom : padding.left + padding.right);
+        }
+
+        Rect AnchoredRect(OverlaySettings settings, float width, float height)
+        {
             // Never let the panel run off a phone screen, whatever the font scale is.
             width = Mathf.Min(width, Screen.width - settings.margin * 2f);
             height = Mathf.Min(height, Screen.height - settings.margin * 2f);
@@ -267,15 +332,16 @@ namespace MobileAdjustGameQuality
                 return;
             }
 
-            // Four taps in the top-right corner, for devices without a keyboard. The hit area
-            // is an invisible IMGUI region rather than a raw touch read so it works with
-            // either input backend and does not fight the game's own UI.
+            // Four taps in the top-right corner, kept as a way back in on a device where the
+            // open button has been turned off. The hit area is an invisible IMGUI region
+            // rather than a raw touch read so it works with either input backend and does not
+            // fight the game's own UI.
             if (e.type != EventType.MouseDown)
                 return;
 
-            // Skip when the panel itself is under the tap, or anchoring the overlay to the
-            // top right would make its buttons unclickable.
-            if (m_Visible && m_PanelRect.Contains(e.mousePosition))
+            // Skip when the overlay itself is under the tap, or anchoring to the top right
+            // would make its own buttons unclickable.
+            if (m_OccupiedRect.Contains(e.mousePosition))
                 return;
 
             var corner = new Rect(Screen.width - k_TapCornerSize, 0f, k_TapCornerSize, k_TapCornerSize);
@@ -318,9 +384,20 @@ namespace MobileAdjustGameQuality
                     wordWrap = false
                 };
                 m_Text.normal.textColor = Color.white;
+
+                m_Title = new GUIStyle(m_Text)
+                {
+                    fontStyle = FontStyle.Bold
+                };
+
+                // Buttons need the computed size too. Leaving them on the skin default is
+                // what made them render as unreadable specks next to correctly sized text.
+                m_Button = new GUIStyle(GUI.skin.button);
             }
 
             m_Text.fontSize = fontSize;
+            m_Title.fontSize = fontSize;
+            m_Button.fontSize = fontSize;
 
             if (m_Panel == null)
                 m_Panel = new GUIStyle(GUI.skin.box);

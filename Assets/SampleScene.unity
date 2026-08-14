@@ -446,7 +446,7 @@ PrefabInstance:
       objectReference: {fileID: 0}
     - target: {fileID: 5350397520702566526, guid: bfe685c2652bf1d48be01d3cd1594db3, type: 3}
       propertyPath: overlay.scale
-      value: 3
+      value: 1
       objectReference: {fileID: 0}
     - target: {fileID: 5839129927818811543, guid: bfe685c2652bf1d48be01d3cd1594db3, type: 3}
       propertyPath: m_LocalPosition.x

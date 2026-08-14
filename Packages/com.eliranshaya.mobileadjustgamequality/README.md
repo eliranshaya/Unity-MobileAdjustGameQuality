@@ -34,7 +34,7 @@ https://github.com/eliranshaya/Unity-MobileAdjustGameQuality.git?path=/Packages/
 To lock to a specific version, append the tag:
 
 ```
-https://github.com/eliranshaya/Unity-MobileAdjustGameQuality.git?path=/Packages/com.eliranshaya.mobileadjustgamequality#v2.2.1
+https://github.com/eliranshaya/Unity-MobileAdjustGameQuality.git?path=/Packages/com.eliranshaya.mobileadjustgamequality#v2.3.0
 ```
 
 ---
@@ -360,12 +360,17 @@ none of it either way.
 | **Anchor** | Nine positions: any corner, any edge centre, or dead centre. The panel measures itself and pins accordingly. |
 | **Fields** | Multi-select dropdown, 12 readouts: tier, target FPS, frame budget, current FPS, average ms, p95 ms, render scale, thermal, heat band, oscillation lock, adjustments gate, device. Tick only what you are chasing. |
 | **Show Tier Buttons** | The three live tier-switch buttons. |
+| **Show Toggle Button** | The small **MAQ** button drawn at the anchor while the panel is closed. Turn it off for a completely clean screen. |
+| **Open On Start** | Whether the panel starts open or collapsed to the toggle button. |
 | **Scale** | Multiplies the DPI-derived font size, 0.5x to 3x. |
 | **Background Opacity** | Panel darkness. |
 | **Margin** | Distance from the screen edge. |
 
-At runtime, **F1** or four taps in the top-right corner hide and show it without touching
-the prefab. The lines are rebuilt once per frame on the IMGUI layout pass and reused for
+Opening and closing at runtime: tap the **MAQ** button to open, the **X** in the panel
+header to close. **F1** toggles either way, and four taps in the top-right corner do the
+same on a device where you turned the toggle button off. Taps that land on the panel itself
+never count towards the corner gesture, so anchoring to the top right does not make the
+overlay's own buttons unclickable. The lines are rebuilt once per frame on the IMGUI layout pass and reused for
 the repaint, so the interpolated strings are not built twice.
 
 With the define off all of that is compiled out. The overlay class does not exist, and the

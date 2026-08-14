@@ -115,6 +115,15 @@ namespace MobileAdjustGameQuality
         [Tooltip("Show the three buttons that switch tier live.")]
         public bool showTierButtons = true;
 
+        [Tooltip("Show a small button at the anchor when the panel is closed, so it can be " +
+                 "reopened by tapping. Turn it off for a completely clean screen - F1 and " +
+                 "four taps in the top-right corner still work.")]
+        public bool showToggleButton = true;
+
+        [Tooltip("Start with the panel open. Off means only the small toggle button shows " +
+                 "until you tap it.")]
+        public bool openOnStart = true;
+
         [Tooltip("Multiplies the font size, which is derived from the render target size. " +
                  "Raise it if the overlay is hard to read, lower it if it covers too much " +
                  "of the game.")]
