@@ -91,9 +91,9 @@ its target.
 | --- | --- | --- |
 | Missing target | frame time > budget × 1.08 for 3 s | down one rung |
 | **Wrong frame rate** | frame time > budget × 1.35 for 3 s | **jump straight to the first 30 fps rung** |
-| Heat | device reports warm | down one rung, every 30 s |
-| Severe heat | OS says it is throttling | down one rung immediately |
-| Recovered | cool **and** frame time ≤ budget × 1.05 for 20 s | up one rung |
+| Heat | device in the **Shed** band | down one rung, every 30 s |
+| Urgent heat | device in the **Urgent** band | down one rung, as fast as the ladder allows |
+| Recovered | **fully cool** *and* frame time ≤ budget × 1.05 for 20 s | up one rung |
 
 The wrong-frame-rate jump is the one that matters most in practice. 1.35 is roughly 44 fps
 against a 60 target — at that point the device is not short of its target, it is on the wrong
@@ -169,9 +169,36 @@ own verdict.
 | **iOS** | `NSProcessInfo.thermalState` via a bundled `.mm` | nominal / fair / serious / critical |
 | **Editor, desktop** | none | the ladder runs on frame times alone |
 
-Warm is status ≥ 1 or headroom ≥ 0.85 — early on purpose, because raising quality on a warming
-device is the change most likely to be undone seconds later. Severe is status ≥ 3 or headroom
-≥ 1.0.
+### Three bands, not two
+
+Those scales have a wide middle, and collapsing it into one "warm" flag was wrong. Android's
+`LIGHT` means *throttling has started and the user cannot tell* — it is the state most phones
+sit in after a few minutes of play. Treating it as a reason to give quality back walks a
+perfectly healthy device to the bottom of the ladder and leaves it there for the session.
+
+The right response to `LIGHT` is to stop asking for more, not to start giving things up.
+
+| Band | Android status | Headroom | iOS | Response |
+| --- | --- | --- | --- | --- |
+| **Cool** | `NONE` | < 0.85 | nominal | normal adaptation |
+| **Hold** | `LIGHT` | ≥ 0.85 | fair | stop climbing. Nothing else. |
+| **Shed** | `MODERATE` | ≥ 0.95 | — | one rung every 30 s, ignoring frame times |
+| **Urgent** | `SEVERE`+ | ≥ 1.0 | serious, critical | one rung per evaluation |
+
+Every threshold — the status *and* the headroom for each band — is a field on the prefab.
+
+`Shed` is where Google's own guidance says to start reducing, and it is deliberately before
+the player feels anything: waiting for frames to suffer means waiting for the OS to have
+already throttled the chip.
+
+Two things about `Urgent` worth knowing. Its interval defaults to zero, meaning every
+evaluation, which takes the ladder from the top rung to the bottom in about two seconds — the
+right answer for a device the OS is already clocking down, but also the most abrupt change the
+game can make. `Heat > Urgent Step Seconds` turns that jump into a slide.
+
+And **iOS has no `MODERATE`**. Apple exposes four states, `serious` maps to `SEVERE` here, so
+on iPhone the band after `fair` is `Urgent` with nothing in between. If the two-second descent
+is too abrupt for your game, iPhone is where you will see it first.
 
 Every Android JNI call is wrapped in try/catch: several OEM ROMs throw, and one failure
 disables thermal input rather than retrying forever.
@@ -232,10 +259,10 @@ using MobileAdjustGameQuality;
 
 var quality = MobileQualityManager.Instance;
 
-int   step   = quality.CurrentStepIndex;
-float p75    = quality.Stats.P75Ms;
-float budget = quality.CurrentStep.FrameBudgetMs;
-bool  warm   = quality.Thermal.IsWarm;
+int      step   = quality.CurrentStepIndex;
+float    p75    = quality.Stats.P75Ms;
+float    budget = quality.CurrentStep.FrameBudgetMs;
+HeatBand heat   = quality.Heat;          // Cool / Hold / Shed / Urgent
 
 // Hold everything still during a cutscene.
 quality.AllowAdjustments = false;
@@ -250,14 +277,26 @@ quality.OnStepChanged += index => Debug.Log($"now on rung {index}");
 
 ## Notes
 
-**In the editor, moving the ladder writes to the URP asset on disk.** After a play session
-`MAQ-URP.asset` holds whatever the ladder settled on. Re-run Setup to rewrite it. This does
-not happen in a player build.
+**In the editor the ladder is pinned to rung 0** and does not move — `Adaptation > Best Step
+In Editor`, on by default. A desktop running a mobile game has performance to spare, so all
+adaptation achieves in Play mode is making the Game view look worse than the build will, over
+a scene you are trying to look at. Frame times and temperature are still measured and still
+shown in the overlay; only the decision is suppressed, and the remembered rung is neither read
+nor written. Turn it off for the few minutes you want to watch the ladder work.
 
-**The editor is a poor place to judge any of this.** The Game view renders a phone resolution
-on a desktop panel, alongside the inspector and the console, with the editor's own stalls in
-the frame times. The p75 and the 500 ms stall rejection make the ladder robust to that noise,
-but the numbers still say nothing about a phone. An Android build answers in a minute.
+The check is inside `#if UNITY_EDITOR`, so a prefab saved with it ticked cannot pin a shipped
+game to rung 0.
+
+**The editor is a poor place to judge any of this** even with the pin off. The Game view
+renders a phone resolution on a desktop panel, alongside the inspector and the console, with
+the editor's own stalls in the frame times. The p75 and the 500 ms stall rejection make the
+ladder robust to that noise, but the numbers still say nothing about a phone. An Android build
+answers in a minute.
+
+**Moving the ladder in the editor writes to the URP asset on disk.** With the pin on this no
+longer happens by itself, but if you turn it off, `MAQ-URP.asset` will hold whatever the
+ladder settled on after a play session. Re-run Setup to rewrite it. Player builds are
+unaffected either way.
 
 **Adaptive Performance is optional.** If Unity's package is installed, the overlay's Adaptive
 Performance group reports its thermal data, bottleneck and real CPU/GPU frame times. Nothing

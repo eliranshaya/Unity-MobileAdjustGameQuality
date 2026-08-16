@@ -182,11 +182,13 @@ namespace MobileAdjustGameQuality
 
         void BuildAdaptation()
         {
-            string phase = m_Manager.IsInStartupGrace
-                ? "warming up"
-                : m_Manager.IsCalibrating
-                    ? $"calibrating {m_Manager.CalibrationRemaining:F0}s"
-                    : "steady";
+            string phase = m_Manager.IsPinnedToBest
+                ? "pinned (editor)"
+                : m_Manager.IsInStartupGrace
+                    ? "warming up"
+                    : m_Manager.IsCalibrating
+                        ? $"calibrating {m_Manager.CalibrationRemaining:F0}s"
+                        : "steady";
 
             m_Lines.Add("#ADAPTATION");
             m_Lines.Add($"Step        {m_Manager.CurrentStepIndex} of 0-{m_Manager.Profile.WorstStep}" +
@@ -210,7 +212,12 @@ namespace MobileAdjustGameQuality
             }
 
             string headroom = float.IsNaN(thermal.Headroom) ? string.Empty : $" · headroom {thermal.Headroom:F2}";
-            string state = thermal.IsSevere ? "SEVERE" : thermal.IsWarm ? "WARM" : "cool";
+
+            // The band, not the raw status: the status is what the OS said, the band is what
+            // this package is going to do about it, and the second one is what you are
+            // actually looking at the overlay to find out.
+            HeatBand band = m_Manager.Heat;
+            string state = band == HeatBand.Cool ? "cool" : band.ToString().ToUpperInvariant();
 
             m_Lines.Add($"Thermal     {state} · {thermal.Level}{headroom}");
         }

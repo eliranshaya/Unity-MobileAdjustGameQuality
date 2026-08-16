@@ -4,6 +4,32 @@ using UnityEngine;
 namespace MobileAdjustGameQuality
 {
     /// <summary>
+    /// How hot the device is, expressed as what to do about it.
+    /// </summary>
+    /// <remarks>
+    /// Three bands rather than two, because the platform scales have a wide middle that the
+    /// old warm/severe split collapsed. Android's <c>LIGHT</c> means "throttling has started
+    /// and the user cannot tell" - it is the most common state a phone is in after a few
+    /// minutes of play, and treating it as a reason to shed quality walks a perfectly healthy
+    /// device to the bottom of the ladder and leaves it there. The right response to
+    /// <c>LIGHT</c> is to stop asking for more, not to start giving things up.
+    /// </remarks>
+    public enum HeatBand
+    {
+        /// <summary>Nothing to do. The ladder may rise.</summary>
+        Cool = 0,
+
+        /// <summary>Hold the current rung. Do not rise, do not shed.</summary>
+        Hold = 1,
+
+        /// <summary>Shed a rung periodically, regardless of frame times.</summary>
+        Shed = 2,
+
+        /// <summary>The OS is taking performance away. Shed as fast as the ladder allows.</summary>
+        Urgent = 3
+    }
+
+    /// <summary>
     /// Tuning for the quality ladder.
     /// </summary>
     /// <remarks>
@@ -36,6 +62,13 @@ namespace MobileAdjustGameQuality
                  "is 0.8 render scale, shadows on, 60 fps.")]
         [Min(0)]
         public int startStep = 2;
+
+        [Tooltip("In the Unity editor, pin the ladder to rung 0 and never move it. A desktop " +
+                 "running a mobile game has performance to spare, so the only thing adaptation " +
+                 "achieves in Play mode is making the Game view look worse than the build " +
+                 "will. Turn this off for the few minutes you actually want to watch the " +
+                 "ladder work. Has no effect in a player build - the check is compiled out.")]
+        public bool bestStepInEditor = true;
 
         [Tooltip("Remember the rung this device settled on and start there next launch. A " +
                  "measurement from the last session beats any guess made at startup.")]
@@ -118,12 +151,53 @@ namespace MobileAdjustGameQuality
         public float wrongFrameRateSeconds = 3f;
 
         [Header("Going down: heat")]
-        [Tooltip("Seconds between drops while the device reports itself warm, regardless of " +
-                 "frame times. Waiting for frames to suffer means waiting for the OS to have " +
-                 "already throttled the chip. Keep this at or above the thermal poll interval, " +
-                 "or the ladder will shed several rungs off one stale reading.")]
+        [Tooltip("Status at which the ladder stops climbing but does not give anything back. " +
+                 "Android LIGHT means throttling has started and the user cannot tell - it is " +
+                 "the state most phones sit in after a few minutes of play, so shedding " +
+                 "quality here would walk a healthy device to the bottom of the ladder for " +
+                 "nothing. iOS reports this as 'fair'.")]
+        public ThermalLevel holdAtStatus = ThermalLevel.Light;
+
+        [Tooltip("Headroom forecast that also means hold. Headroom runs 0..1+ where 1.0 is " +
+                 "'throttling right now', so 0.85 is a few seconds of warning. Android 11+ " +
+                 "only; NaN elsewhere, which simply leaves the status to decide.")]
+        [Range(0.5f, 1.5f)]
+        public float holdAtHeadroom = 0.85f;
+
+        [Tooltip("Status at which the ladder starts shedding a rung periodically, ignoring " +
+                 "frame times. Android MODERATE is where Google's own guidance says to start " +
+                 "reducing: the user still is not suffering, which is exactly why it is the " +
+                 "right moment to act. Waiting for frames to suffer means waiting for the OS " +
+                 "to have already throttled the chip.")]
+        public ThermalLevel shedAtStatus = ThermalLevel.Moderate;
+
+        [Tooltip("Headroom forecast that also means shed.")]
+        [Range(0.5f, 1.5f)]
+        public float shedAtHeadroom = 0.95f;
+
+        [Tooltip("Seconds between drops while shedding. Keep this at or above the thermal " +
+                 "poll interval, or the ladder will shed several rungs off one stale reading.")]
         [Range(1f, 300f)]
         public float heatStepSeconds = 30f;
+
+        [Tooltip("Status at which the OS is actively clocking the chip down and the ladder " +
+                 "stops waiting for anything. Note that iOS has no equivalent of MODERATE: it " +
+                 "reports nominal, fair, serious and critical, and 'serious' maps to SEVERE " +
+                 "here, so on iPhone this is the band that follows 'fair'.")]
+        public ThermalLevel urgentAtStatus = ThermalLevel.Severe;
+
+        [Tooltip("Headroom forecast that also means urgent. 1.0 is the OS saying it is " +
+                 "throttling now, not in ten seconds.")]
+        [Range(0.5f, 1.5f)]
+        public float urgentAtHeadroom = 1f;
+
+        [Tooltip("Seconds between drops while urgent. Zero means every evaluation, which " +
+                 "takes the ladder from the top rung to the bottom in about two seconds. " +
+                 "That is the right answer for a device the OS is already throttling, but it " +
+                 "is also the most abrupt change the game can make - raise it to a second or " +
+                 "two if you would rather the descent be visible as a slide than a jump.")]
+        [Range(0f, 30f)]
+        public float urgentStepSeconds;
 
         [Header("Coming back up")]
         [Tooltip("Frame time at or below budget x this counts as holding the target. It sits " +
@@ -149,6 +223,33 @@ namespace MobileAdjustGameQuality
                  "instead of flapping for the whole session.")]
         [Range(1, 10)]
         public int maxRiseAttemptsPerStep = 3;
+
+        /// <summary>
+        /// Reads the sensor and says what to do about it.
+        /// </summary>
+        /// <remarks>
+        /// Tested from the top down, so a misconfigured set of thresholds - urgent below
+        /// shed, say - degrades to the most cautious answer rather than to an unpredictable
+        /// one.
+        /// </remarks>
+        /// <param name="sensor">The thermal sensor. <c>null</c> reads as cool.</param>
+        /// <returns>Which band the device is in.</returns>
+        public HeatBand Band(ThermalSensor sensor)
+        {
+            if (sensor == null)
+                return HeatBand.Cool;
+
+            if (sensor.AtLeast(urgentAtStatus, urgentAtHeadroom))
+                return HeatBand.Urgent;
+
+            if (sensor.AtLeast(shedAtStatus, shedAtHeadroom))
+                return HeatBand.Shed;
+
+            if (sensor.AtLeast(holdAtStatus, holdAtHeadroom))
+                return HeatBand.Hold;
+
+            return HeatBand.Cool;
+        }
 
         /// <summary>Seconds of missing the target before a drop, for the current phase.</summary>
         /// <param name="calibrating">Whether the calibration window is still open.</param>

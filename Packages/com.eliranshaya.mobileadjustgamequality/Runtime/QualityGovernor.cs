@@ -55,7 +55,8 @@ namespace MobileAdjustGameQuality
         float m_MissingForSeconds;
         float m_BadlyMissingForSeconds;
         float m_HoldingForSeconds;
-        float m_WarmForSeconds;
+        float m_SheddingForSeconds;
+        float m_UrgentCooldownUntil;
         float m_CooldownUntil;
         float m_SettledAt;
 
@@ -81,7 +82,7 @@ namespace MobileAdjustGameQuality
             m_MissingForSeconds = 0f;
             m_BadlyMissingForSeconds = 0f;
             m_HoldingForSeconds = 0f;
-            m_WarmForSeconds = 0f;
+            m_SheddingForSeconds = 0f;
             m_SettledAt = now + m_Settings.settleSeconds;
         }
 
@@ -115,15 +116,14 @@ namespace MobileAdjustGameQuality
         /// The first rung that drops the frame rate below the current one, or <c>-1</c> when
         /// there is none.
         /// </param>
-        /// <param name="warm">The device reports itself warm.</param>
-        /// <param name="severe">The device reports severe throttling.</param>
+        /// <param name="heat">What the device's temperature says to do.</param>
         /// <param name="calibrating">
         /// Whether the opening calibration window is still open. It shortens every window, so
         /// the device lands on the right rung while the player is still loading in.
         /// </param>
         /// <returns>The rung to move to. Equal to <paramref name="step"/> means hold.</returns>
         public int Evaluate(float now, float elapsed, float frameMs, float budgetMs,
-            int step, int worstStep, int halveFrameRateStep, bool warm, bool severe, bool calibrating)
+            int step, int worstStep, int halveFrameRateStep, HeatBand heat, bool calibrating)
         {
             if (!m_Settings.enabled)
             {
@@ -137,14 +137,22 @@ namespace MobileAdjustGameQuality
 
             m_MissingForSeconds = missing ? m_MissingForSeconds + elapsed : 0f;
             m_BadlyMissingForSeconds = badlyMissing ? m_BadlyMissingForSeconds + elapsed : 0f;
-            m_HoldingForSeconds = holding && !warm ? m_HoldingForSeconds + elapsed : 0f;
-            m_WarmForSeconds = warm ? m_WarmForSeconds + elapsed : 0f;
 
-            // Severe heat is the one case that ignores every timer. The OS is already taking
-            // performance away; the only question is whether we choose what to give up.
-            if (severe && step < worstStep)
+            // Any heat at all stops the climb. That is the whole response to the Hold band -
+            // the device is warm enough that raising quality would most likely be undone
+            // within the minute, and nothing more than that is warranted yet.
+            m_HoldingForSeconds = holding && heat == HeatBand.Cool ? m_HoldingForSeconds + elapsed : 0f;
+
+            m_SheddingForSeconds = heat >= HeatBand.Shed ? m_SheddingForSeconds + elapsed : 0f;
+
+            // Urgent is the one case that ignores the settle and drop timers. The OS is
+            // already taking performance away; the only question left is whether we choose
+            // what to give up. Its own interval is separate and defaults to zero, so by
+            // default this fires on every evaluation.
+            if (heat >= HeatBand.Urgent && step < worstStep && now >= m_UrgentCooldownUntil)
             {
                 LastReason = Reason.Heat;
+                m_UrgentCooldownUntil = now + m_Settings.urgentStepSeconds;
                 return Drop(now, step, worstStep, calibrating);
             }
 
@@ -178,7 +186,7 @@ namespace MobileAdjustGameQuality
                 return Drop(now, step, worstStep, calibrating);
             }
 
-            if (m_WarmForSeconds >= m_Settings.heatStepSeconds)
+            if (m_SheddingForSeconds >= m_Settings.heatStepSeconds)
             {
                 LastReason = step < worstStep ? Reason.Heat : Reason.AtWorst;
                 return Drop(now, step, worstStep, calibrating);

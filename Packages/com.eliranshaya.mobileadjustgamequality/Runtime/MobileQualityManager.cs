@@ -120,6 +120,43 @@ namespace MobileAdjustGameQuality
         /// </summary>
         public bool AllowAdjustments { get; set; } = true;
 
+        /// <summary>
+        /// What the device's temperature currently says to do, from the thresholds on
+        /// <see cref="adaptation"/>.
+        /// </summary>
+        public HeatBand Heat => adaptation == null ? HeatBand.Cool : adaptation.Band(m_Thermal);
+
+        /// <summary>
+        /// True when the ladder is held at rung 0 because this is the editor.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// A desktop running a mobile game has performance to spare, so in Play mode the
+        /// ladder has nothing useful to find - all it does is make the Game view look worse
+        /// than the build will, over a scene you are trying to look at. Frame times and
+        /// temperature are still measured and still shown in the overlay; only the decision
+        /// is suppressed.
+        /// </para>
+        /// <para>
+        /// The editor is a poor judge anyway: the Game view renders a phone resolution on a
+        /// desktop panel, next to the inspector and the console, with the editor's own stalls
+        /// in the frame times. Turn <c>bestStepInEditor</c> off when you specifically want to
+        /// watch the ladder move; leave it on the rest of the time.
+        /// </para>
+        /// <para>
+        /// Compiled out entirely in a player build - the field is never read there, so a
+        /// prefab that happens to have it ticked cannot pin a shipped game to rung 0.
+        /// </para>
+        /// </remarks>
+        public bool IsPinnedToBest
+        {
+#if UNITY_EDITOR
+            get => adaptation != null && adaptation.bestStepInEditor;
+#else
+            get => false;
+#endif
+        }
+
         /// <summary>Raised whenever the ladder moves. Carries the new rung index.</summary>
         public event Action<int> OnStepChanged;
 
@@ -150,14 +187,36 @@ namespace MobileAdjustGameQuality
             int start = profile.ClampStep(adaptation.startStep);
             string origin = "default";
 
-            if (adaptation.rememberLastStep && QualityStepMemory.TryLoad(profile.steps.Length, out int remembered))
+            if (IsPinnedToBest)
+            {
+                // Not the remembered rung either: a rung remembered in the editor was measured
+                // on a desktop, and starting a Play session on it would be the same guess with
+                // an extra step.
+                start = 0;
+                origin = "editor (pinned to the best rung)";
+            }
+            else if (adaptation.rememberLastStep
+                     && QualityStepMemory.TryLoad(profile.steps.Length, out int remembered))
             {
                 start = profile.ClampStep(remembered);
                 origin = "remembered from the last session";
             }
 
-            m_GraceEndsAt = Time.unscaledTime + adaptation.startupGraceSeconds;
-            m_CalibrationEndsAt = m_GraceEndsAt + adaptation.calibrationSeconds;
+            if (IsPinnedToBest)
+            {
+                // No grace and no calibration to run. Skipping calibration also keeps the
+                // per-frame path to a single ring buffer write: it is the calibration branch
+                // in Update that recalculates every frame, and there is nothing here for it
+                // to decide. The steady-state coroutine keeps the overlay live at 4 Hz.
+                m_GraceEndsAt = Time.unscaledTime;
+                m_CalibrationEndsAt = Time.unscaledTime;
+            }
+            else
+            {
+                m_GraceEndsAt = Time.unscaledTime + adaptation.startupGraceSeconds;
+                m_CalibrationEndsAt = m_GraceEndsAt + adaptation.calibrationSeconds;
+            }
+
             ApplyStep(start, origin);
         }
 
@@ -261,6 +320,14 @@ namespace MobileAdjustGameQuality
             float now = Time.unscaledTime;
             float elapsed = now - m_LastCheckTime;
 
+            // Recalculate above, then stop: the overlay still reports honest frame times and
+            // an honest temperature, but nothing acts on them.
+            if (IsPinnedToBest)
+            {
+                m_LastCheckTime = now;
+                return;
+            }
+
             // Nothing is judged during the opening grace, and nothing is judged until the
             // window is full: a partial window is dominated by whatever happened during
             // loading, and p95 over six frames is just "the worst frame".
@@ -289,8 +356,7 @@ namespace MobileAdjustGameQuality
                 CurrentStepIndex,
                 profile.WorstStep,
                 profile.FindLowerFrameRateStep(CurrentStepIndex),
-                m_Thermal.IsWarm,
-                m_Thermal.IsSevere,
+                Heat,
                 IsCalibrating);
 
             if (next != CurrentStepIndex)

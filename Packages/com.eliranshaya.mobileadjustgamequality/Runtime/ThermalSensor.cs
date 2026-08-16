@@ -50,13 +50,6 @@ namespace MobileAdjustGameQuality
     /// </remarks>
     public sealed class ThermalSensor : IDisposable
     {
-        /// <summary>
-        /// Headroom is a forecast on a 0..1+ scale where 1.0 means "throttling right now".
-        /// Treating 0.85 as warm buys a few seconds of warning before the OS acts, which is
-        /// the difference between shedding load on our terms and having it taken.
-        /// </summary>
-        public const float WarmHeadroom = 0.85f;
-
         /// <summary>The forecast window passed to <c>getThermalHeadroom</c>, in seconds.</summary>
         const int k_HeadroomForecastSeconds = 10;
 
@@ -91,32 +84,34 @@ namespace MobileAdjustGameQuality
         public bool IsAvailable => Level != ThermalLevel.Unknown || !float.IsNaN(Headroom);
 
         /// <summary>
-        /// True when quality must not be raised. Deliberately early: raising quality on a
-        /// warming device is the change most likely to be undone seconds later.
+        /// Tests the device against one thermal threshold.
         /// </summary>
-        public bool IsWarm
+        /// <remarks>
+        /// <para>
+        /// The sensor reports; it does not decide. Where the thresholds sit is policy, and
+        /// policy lives in <see cref="AdaptationSettings"/> where it can be edited without
+        /// touching this file - see <see cref="AdaptationSettings.Band"/>.
+        /// </para>
+        /// <para>
+        /// Either signal alone is enough. They are not redundant: the status is what the OS
+        /// has already decided, and the headroom forecast is where it expects to be in ten
+        /// seconds, so on Android 11+ the forecast usually crosses first. On iOS and on older
+        /// Android there is no forecast at all and <see cref="Headroom"/> stays
+        /// <c>NaN</c>, which fails the comparison and leaves the status to decide alone.
+        /// </para>
+        /// </remarks>
+        /// <param name="level">Status at or above which this returns true.</param>
+        /// <param name="headroom">Headroom at or above which this returns true.</param>
+        /// <returns>True when either signal has reached its threshold.</returns>
+        public bool AtLeast(ThermalLevel level, float headroom)
         {
-            get
-            {
-                if (Level >= ThermalLevel.Light)
-                    return true;
-                return !float.IsNaN(Headroom) && Headroom >= WarmHeadroom;
-            }
-        }
+            // Unknown is -1, so it compares below every real level and never trips a band on
+            // a platform with no thermal API.
+            if (Level != ThermalLevel.Unknown && Level >= level)
+                return true;
 
-        /// <summary>True when quality must actively be given back, not merely held.</summary>
-        public bool IsSevere
-        {
-            get
-            {
-                if (Level >= ThermalLevel.Severe)
-                    return true;
-                return !float.IsNaN(Headroom) && Headroom >= 1f;
-            }
+            return !float.IsNaN(Headroom) && Headroom >= headroom;
         }
-
-        /// <summary>True when it is safe to raise quality.</summary>
-        public bool IsCool => !IsWarm;
 
         /// <summary>
         /// Acquires platform handles. Safe everywhere; does nothing where there is nothing to

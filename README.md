@@ -22,7 +22,7 @@ https://github.com/eliranshaya/Unity-MobileAdjustGameQuality.git?path=/Packages/
 That tracks the default branch. To pin a version, add the tag:
 
 ```
-https://github.com/eliranshaya/Unity-MobileAdjustGameQuality.git?path=/Packages/com.eliranshaya.mobileadjustgamequality#v3.1.0
+https://github.com/eliranshaya/Unity-MobileAdjustGameQuality.git?path=/Packages/com.eliranshaya.mobileadjustgamequality#v3.2.0
 ```
 
 <details>
@@ -31,7 +31,7 @@ https://github.com/eliranshaya/Unity-MobileAdjustGameQuality.git?path=/Packages/
 ```json
 {
   "dependencies": {
-    "com.eliranshaya.mobileadjustgamequality": "https://github.com/eliranshaya/Unity-MobileAdjustGameQuality.git?path=/Packages/com.eliranshaya.mobileadjustgamequality#v3.1.0"
+    "com.eliranshaya.mobileadjustgamequality": "https://github.com/eliranshaya/Unity-MobileAdjustGameQuality.git?path=/Packages/com.eliranshaya.mobileadjustgamequality#v3.2.0"
   }
 }
 ```
@@ -87,7 +87,9 @@ Thermal     cool · None · headroom 0.42
 | 6 | 0.85 | on | 512 | **30** |
 | 7 | 0.65 | off | — | 30 |
 
-- **Down** when frame times miss the target, or when the OS reports the device warm
+- **Down** when frame times miss the target, or when the OS reports the device hot enough to
+  act on — in three bands, so the most common thermal state on a phone stops the climb
+  without starting a descent
 - **Straight to 30 fps** when the device is not short of its target but on the wrong one —
   a stable 30 beats an unstable 44, and runs far cooler
 - **Up** only when the device is cool **and** holding, and much more slowly than it goes down
@@ -102,6 +104,8 @@ instead of a guess.
 Thermal comes from `PowerManager` on Android and `NSProcessInfo.thermalState` on iOS, through
 a bundled plugin that a post-process build step verifies reached the Xcode project. You never
 open Xcode.
+
+In the editor the ladder is pinned to rung 0, because a desktop has nothing useful to tell it.
 
 ---
 
