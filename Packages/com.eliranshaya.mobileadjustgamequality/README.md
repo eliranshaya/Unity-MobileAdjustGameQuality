@@ -10,8 +10,14 @@ device by moving along a quality ladder, driven by frame times and by how hot th
 **Window → Package Manager → + → Add package from git URL:**
 
 ```
-https://github.com/eliranshaya/Unity-MobileAdjustGameQuality.git?path=/Packages/com.eliranshaya.mobileadjustgamequality
+https://github.com/eliranshaya/Unity-MobileAdjustGameQuality.git?path=/Packages/com.eliranshaya.mobileadjustgamequality#v3.2.1
 ```
+
+Leaving the `#v…` off tracks the newest commit on `main` instead. Pin the tag for anything you
+ship — and note that Package Manager resolves a git URL exactly once either way, recording the
+commit in `Packages/packages-lock.json`, so **updating means editing the tag in
+`Packages/manifest.json`**, not pressing anything in the UI.
+[All releases](https://github.com/eliranshaya/Unity-MobileAdjustGameQuality/tags).
 
 Requires Unity 2022.3 LTS or newer and URP 14+, which installs automatically. URP must be the
 active pipeline in **Project Settings → Graphics**.

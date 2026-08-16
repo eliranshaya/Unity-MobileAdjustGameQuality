@@ -7,6 +7,11 @@ Quality is not a menu the player never opens and not a guess made from the devic
 one number — which rung of an eight-rung ladder is applied — and the device itself decides it,
 from its own frame times and from how hot it is.
 
+[![Latest release](https://img.shields.io/github/v/tag/eliranshaya/Unity-MobileAdjustGameQuality?label=latest&sort=semver&color=2ea44f)](https://github.com/eliranshaya/Unity-MobileAdjustGameQuality/tags)
+[![Unity 2022.3+](https://img.shields.io/badge/unity-2022.3%2B-black)](https://unity.com)
+[![URP 14+](https://img.shields.io/badge/URP-14%2B-black)](https://docs.unity3d.com/Manual/urp/urp-introduction.html)
+[![License MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
 Unity 2022.3 LTS or newer · URP 14+ · Android and iOS · no dependencies.
 
 ---
@@ -16,22 +21,30 @@ Unity 2022.3 LTS or newer · URP 14+ · Android and iOS · no dependencies.
 **Window → Package Manager → `+` → Add package from git URL**, then paste:
 
 ```
+https://github.com/eliranshaya/Unity-MobileAdjustGameQuality.git?path=/Packages/com.eliranshaya.mobileadjustgamequality#v3.2.1
+```
+
+That is the current release — the green badge above always shows the newest tag, and swapping
+the `#v…` at the end is the only thing that changes between versions.
+
+<details>
+<summary>Other ways to add it</summary>
+
+**Always the newest commit**, by leaving the tag off:
+
+```
 https://github.com/eliranshaya/Unity-MobileAdjustGameQuality.git?path=/Packages/com.eliranshaya.mobileadjustgamequality
 ```
 
-That tracks the default branch. To pin a version, add the tag:
+Convenient, but it is whatever is on `main` at the moment you add it, which may be ahead of
+the last release. Pin the tag for anything you ship.
 
-```
-https://github.com/eliranshaya/Unity-MobileAdjustGameQuality.git?path=/Packages/com.eliranshaya.mobileadjustgamequality#v3.2.0
-```
-
-<details>
-<summary>Or add it to <code>Packages/manifest.json</code> by hand</summary>
+**By hand**, in `Packages/manifest.json`:
 
 ```json
 {
   "dependencies": {
-    "com.eliranshaya.mobileadjustgamequality": "https://github.com/eliranshaya/Unity-MobileAdjustGameQuality.git?path=/Packages/com.eliranshaya.mobileadjustgamequality#v3.2.0"
+    "com.eliranshaya.mobileadjustgamequality": "https://github.com/eliranshaya/Unity-MobileAdjustGameQuality.git?path=/Packages/com.eliranshaya.mobileadjustgamequality#v3.2.1"
   }
 }
 ```
@@ -42,6 +55,21 @@ a full Unity project used to develop and test it.
 
 **Before you start:** URP must be the active pipeline in **Project Settings → Graphics**. The
 Setup window checks and tells you if it is not.
+
+### Updating to a newer version
+
+Package Manager will **not** pick up a new version on its own, and this catches everyone. A
+git URL is resolved once and the resolved commit is written into `Packages/packages-lock.json`,
+so the project keeps using it until you say otherwise — even with no tag in the URL.
+
+Edit the `#v…` at the end of the URL in `Packages/manifest.json` and save. Unity re-resolves on
+focus.
+
+If the URL has no tag, there is nothing to edit: delete the package's entry from
+`Packages/packages-lock.json`, or remove and re-add it in Package Manager.
+
+Then re-run `Tools > Mobile Quality > Setup` if the release notes ask for it. New settings
+fields do not need it — Unity gives them their defaults on your existing prefab.
 
 ---
 
@@ -115,6 +143,10 @@ The full reference — every threshold, why p75 and not p95, the two startup pha
 overlay, the API, and the reasoning behind each decision — is in the package README:
 
 **[📖 Full documentation](Packages/com.eliranshaya.mobileadjustgamequality/README.md)**
+
+Every release is a tag: **[all versions](https://github.com/eliranshaya/Unity-MobileAdjustGameQuality/tags)**.
+Tags are never moved — a new version always gets a new tag, because UPM caches a resolved git
+package by tag and would keep serving the old copy.
 
 ---
 
