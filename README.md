@@ -4,7 +4,7 @@
 device.**
 
 Quality is not a menu the player never opens and not a guess made from the device model. It is
-one number — which rung of an eight-rung ladder is applied — and the device itself decides it,
+one number — which rung of a nine-rung ladder is applied — and the device itself decides it,
 from its own frame times and from how hot it is.
 
 [![Latest release](https://img.shields.io/github/v/tag/eliranshaya/Unity-MobileAdjustGameQuality?label=latest&sort=semver&color=2ea44f)](https://github.com/eliranshaya/Unity-MobileAdjustGameQuality/tags)
@@ -21,7 +21,7 @@ Unity 2022.3 LTS or newer · URP 14+ · Android and iOS · no dependencies.
 **Window → Package Manager → `+` → Add package from git URL**, then paste:
 
 ```
-https://github.com/eliranshaya/Unity-MobileAdjustGameQuality.git?path=/Packages/com.eliranshaya.mobileadjustgamequality#v3.2.1
+https://github.com/eliranshaya/Unity-MobileAdjustGameQuality.git?path=/Packages/com.eliranshaya.mobileadjustgamequality#v3.2.2
 ```
 
 That is the current release — the green badge above always shows the newest tag, and swapping
@@ -44,7 +44,7 @@ the last release. Pin the tag for anything you ship.
 ```json
 {
   "dependencies": {
-    "com.eliranshaya.mobileadjustgamequality": "https://github.com/eliranshaya/Unity-MobileAdjustGameQuality.git?path=/Packages/com.eliranshaya.mobileadjustgamequality#v3.2.1"
+    "com.eliranshaya.mobileadjustgamequality": "https://github.com/eliranshaya/Unity-MobileAdjustGameQuality.git?path=/Packages/com.eliranshaya.mobileadjustgamequality#v3.2.2"
   }
 }
 ```
@@ -98,7 +98,7 @@ That is all of it. Running Setup again updates in place.
 FPS         60 / 60
 Frame       17.0 p75 · 17.5 p95 · 17.7 worst
 Budget      16.7 ms   ok
-Step        0 of 0-7  (0 = best) · saved
+Step        0 of 0-8  (0 = best) · saved
 Applied     1.00 · shadows 1024 · 60fps
 State       steady · Holding
 Thermal     cool · None · headroom 0.42
@@ -107,13 +107,14 @@ Thermal     cool · None · headroom 0.42
 | # | Render scale | Shadows | Res | FPS |
 | --- | --- | --- | --- | --- |
 | 0 | 1.00 | on | 1024 | 60 |
-| 1 | 0.85 | on | 1024 | 60 |
+| 1 | 0.90 | on | 1024 | 60 |
 | **2** | **0.80** | on | 512 | 60 |
 | 3 | 0.70 | on | 512 | 60 |
-| 4 | 0.80 | **off** | — | 60 |
+| 4 | 0.70 | **off** | — | 60 |
 | 5 | 0.65 | off | — | 60 |
-| 6 | 0.85 | on | 512 | **30** |
-| 7 | 0.65 | off | — | 30 |
+| 6 | 0.60 | off | — | 60 |
+| 7 | 0.60 | off | — | **30** |
+| 8 | 0.55 | off | — | 30 |
 
 - **Down** when frame times miss the target, or when the OS reports the device hot enough to
   act on — in three bands, so the most common thermal state on a phone stops the climb

@@ -10,7 +10,7 @@ device by moving along a quality ladder, driven by frame times and by how hot th
 **Window → Package Manager → + → Add package from git URL:**
 
 ```
-https://github.com/eliranshaya/Unity-MobileAdjustGameQuality.git?path=/Packages/com.eliranshaya.mobileadjustgamequality#v3.2.1
+https://github.com/eliranshaya/Unity-MobileAdjustGameQuality.git?path=/Packages/com.eliranshaya.mobileadjustgamequality#v3.2.2
 ```
 
 Leaving the `#v…` off tracks the newest commit on `main` instead. Pin the tag for anything you
@@ -49,13 +49,14 @@ at once.
 | # | Render scale | Shadows | Res | FPS |
 | --- | --- | --- | --- | --- |
 | 0 | 1.00 | on | 1024 | 60 |
-| 1 | 0.85 | on | 1024 | 60 |
+| 1 | 0.90 | on | 1024 | 60 |
 | **2** | **0.80** | on | 512 | 60 |
 | 3 | 0.70 | on | 512 | 60 |
-| 4 | 0.80 | **off** | — | 60 |
+| 4 | 0.70 | **off** | — | 60 |
 | 5 | 0.65 | off | — | 60 |
-| 6 | 0.85 | on | 512 | **30** |
-| 7 | 0.65 | off | — | 30 |
+| 6 | 0.60 | off | — | 60 |
+| 7 | 0.60 | off | — | **30** |
+| 8 | 0.55 | off | — | 30 |
 
 Rung 2 is where a device with no history starts. Every rung is editable on the prefab.
 
@@ -66,14 +67,16 @@ shortening it leaves near objects with shadows and objects a metre behind them w
 that boundary reads as a bug rather than as lower quality. Distance is one authored value on
 the profile; the ladder only switches shadows on or off.
 
-**Rung 4 raises the render scale while switching shadows off.** Losing the shadow pass frees
-more than the extra pixels cost, so it looks better *and* runs better than rung 3.
+**The ladder only descends.** Every rung is cheaper than the one above it and looks it — no
+rung trades one setting for another, and nothing is handed back on the way down. So a rung
+index is a single honest measure of how hard the device is working, and a device that drops
+one rung sees one small change rather than a rearrangement.
 
-**Rung 6 gives up 60 fps and hands quality back.** A 30 fps budget is twice as long, so half
-the frame rate buys a much better looking frame. Frame rate is last because it is the most
-noticeable change a game can make, and shadows come before it because they are the only rung
-that helps a CPU-bound frame — render scale moves pixels, and a frame limited by draw calls
-does not care how many pixels it is drawing.
+**Frame rate is last.** Rungs 0-6 spend resolution first and then the shadow pass, all while
+holding 60. Only when nothing cheaper is left does rung 7 halve the target, because 30 fps is
+the most noticeable change a game can make. Shadows come before it because they are the only
+rung that helps a CPU-bound frame — render scale moves pixels, and a frame limited by draw
+calls does not care how many pixels it is drawing.
 
 ---
 
@@ -106,6 +109,11 @@ against a 60 target — at that point the device is not short of its target, it 
 target, and walking down one rung at a time would spend twenty seconds overheating to reach a
 conclusion already visible in the numbers. A stable 30 looks and feels better than an unstable
 44, and generates far less heat.
+
+It lands on the **first** 30 fps rung below the current one — rung 7 in the shipping ladder,
+which is also the ladder's cheapest 60 fps rung with the frame rate halved. That is a large
+single step from the top. If you want a gentler landing, insert a 30 fps rung with shadows
+still on above it; the governor jumps to whichever it finds first.
 
 ### Why p75 and not p95
 
@@ -244,7 +252,7 @@ FPS         60 / 60
 Frame       16.9 p75 · 17.8 p95 · 92.2 worst
 Budget      16.7 ms   ok
 ADAPTATION
-Step        2 of 0-7  (0 = best) · saved
+Step        2 of 0-8  (0 = best) · saved
 Applied     0.80 · shadows 512 · 60fps
 State       steady · Holding
 THERMAL

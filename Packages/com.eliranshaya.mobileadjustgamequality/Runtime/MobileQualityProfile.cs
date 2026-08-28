@@ -74,10 +74,10 @@ namespace MobileAdjustGameQuality
         /// </summary>
         /// <remarks>
         /// <para>
-        /// Rungs 0-3 spend resolution while keeping 60 fps and shadows. Rung 4 switches
-        /// shadows off - all at once, never by shortening the distance - and puts what that
-        /// frees straight back into pixels. Rung 6 finally gives up 60 fps, and hands both
-        /// shadows and resolution back in exchange, because a 30 fps budget is twice as long.
+        /// Every rung costs less than the one above it, and nothing is ever handed back on the
+        /// way down. Rungs 0-3 spend resolution while keeping 60 fps and shadows. Rung 4
+        /// switches shadows off - all at once, never by shortening the distance. Rungs 5-6
+        /// keep spending resolution, and only rung 7 gives up 60 fps.
         /// </para>
         /// <para>
         /// Frame rate is last on purpose: it is the most noticeable change a game can make.
@@ -86,23 +86,20 @@ namespace MobileAdjustGameQuality
         /// how many pixels it is drawing.
         /// </para>
         /// </remarks>
-        /// <returns>Eight rungs, best first.</returns>
+        /// <returns>Nine rungs, best first.</returns>
         public static QualityStep[] CreateDefaultLadder()
         {
             return new[]
             {
                 new QualityStep { renderScale = 1.00f, shadowsEnabled = true,  shadowResolution = 1024, targetFrameRate = 60 },
-                new QualityStep { renderScale = 0.85f, shadowsEnabled = true,  shadowResolution = 1024, targetFrameRate = 60 },
+                new QualityStep { renderScale = 0.90f, shadowsEnabled = true,  shadowResolution = 1024, targetFrameRate = 60 },
                 new QualityStep { renderScale = 0.80f, shadowsEnabled = true,  shadowResolution = 512,  targetFrameRate = 60 },
                 new QualityStep { renderScale = 0.70f, shadowsEnabled = true,  shadowResolution = 512,  targetFrameRate = 60 },
-
-                // Shadows off in one move, and the budget that frees goes back into pixels.
-                new QualityStep { renderScale = 0.80f, shadowsEnabled = false, shadowResolution = 512,  targetFrameRate = 60 },
+                new QualityStep { renderScale = 0.70f, shadowsEnabled = false, shadowResolution = 512,  targetFrameRate = 60 },
                 new QualityStep { renderScale = 0.65f, shadowsEnabled = false, shadowResolution = 256,  targetFrameRate = 60 },
-
-                // Half the frame rate. Shadows come back, because the budget just doubled.
-                new QualityStep { renderScale = 0.85f, shadowsEnabled = true,  shadowResolution = 512,  targetFrameRate = 30 },
-                new QualityStep { renderScale = 0.65f, shadowsEnabled = false, shadowResolution = 256,  targetFrameRate = 30 }
+                new QualityStep { renderScale = 0.60f, shadowsEnabled = false, shadowResolution = 256,  targetFrameRate = 60 },
+                new QualityStep { renderScale = 0.60f, shadowsEnabled = false, shadowResolution = 256,  targetFrameRate = 30 },
+                new QualityStep { renderScale = 0.55f, shadowsEnabled = false, shadowResolution = 256,  targetFrameRate = 30 }
             };
         }
     }
