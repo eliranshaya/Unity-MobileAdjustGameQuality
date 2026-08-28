@@ -410,8 +410,10 @@ namespace MobileAdjustGameQuality
                 // rung can ever leave near objects shadowed and objects behind them not.
                 m_UrpAsset.shadowDistance = step.shadowsEnabled ? profile.shadowDistance : 0f;
 
+                // Through UrpCompat because URP 14 declares this property's setter internal
+                // and URP 17 does not, so assigning it here would not compile on 2022.3.
                 if (step.shadowsEnabled)
-                    m_UrpAsset.mainLightShadowmapResolution = step.shadowResolution;
+                    UrpCompat.TrySetMainLightShadowmapResolution(m_UrpAsset, step.shadowResolution);
             }
 
             ApplyFrameRate(step);

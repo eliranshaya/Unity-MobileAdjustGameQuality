@@ -21,7 +21,7 @@ Unity 2022.3 LTS or newer · URP 14+ · Android and iOS · no dependencies.
 **Window → Package Manager → `+` → Add package from git URL**, then paste:
 
 ```
-https://github.com/eliranshaya/Unity-MobileAdjustGameQuality.git?path=/Packages/com.eliranshaya.mobileadjustgamequality#v3.2.2
+https://github.com/eliranshaya/Unity-MobileAdjustGameQuality.git?path=/Packages/com.eliranshaya.mobileadjustgamequality#v3.2.3
 ```
 
 That is the current release — the green badge above always shows the newest tag, and swapping
@@ -44,7 +44,7 @@ the last release. Pin the tag for anything you ship.
 ```json
 {
   "dependencies": {
-    "com.eliranshaya.mobileadjustgamequality": "https://github.com/eliranshaya/Unity-MobileAdjustGameQuality.git?path=/Packages/com.eliranshaya.mobileadjustgamequality#v3.2.2"
+    "com.eliranshaya.mobileadjustgamequality": "https://github.com/eliranshaya/Unity-MobileAdjustGameQuality.git?path=/Packages/com.eliranshaya.mobileadjustgamequality#v3.2.3"
   }
 }
 ```

@@ -10,7 +10,7 @@ device by moving along a quality ladder, driven by frame times and by how hot th
 **Window → Package Manager → + → Add package from git URL:**
 
 ```
-https://github.com/eliranshaya/Unity-MobileAdjustGameQuality.git?path=/Packages/com.eliranshaya.mobileadjustgamequality#v3.2.2
+https://github.com/eliranshaya/Unity-MobileAdjustGameQuality.git?path=/Packages/com.eliranshaya.mobileadjustgamequality#v3.2.3
 ```
 
 Leaving the `#v…` off tracks the newest commit on `main` instead. Pin the tag for anything you
