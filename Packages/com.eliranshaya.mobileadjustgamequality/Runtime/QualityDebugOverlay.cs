@@ -190,11 +190,27 @@ namespace MobileAdjustGameQuality
                         ? $"calibrating {m_Manager.CalibrationRemaining:F0}s"
                         : "steady";
 
+            // The applied rung is a sum, and when something looks wrong it is almost always
+            // the split that explains it: a rung lost to heat reads very differently from a
+            // rung lost to frame times, and only one of them is going to come back on its own.
+            string penalty = m_Manager.ThermalPenalty > 0
+                ? $" + {m_Manager.ThermalPenalty} heat"
+                : string.Empty;
+
+            string floor = m_Manager.FloorStep < m_Manager.Profile.WorstStep
+                ? $" · floor {m_Manager.FloorStep}"
+                : string.Empty;
+
+            string proven = m_Manager.IsStepProven
+                ? $"{m_Manager.ProvenStep}"
+                : "none yet";
+
             m_Lines.Add("#ADAPTATION");
             m_Lines.Add($"Step        {m_Manager.CurrentStepIndex} of 0-{m_Manager.Profile.WorstStep}" +
-                        $"  (0 = best)" +
-                        $"{(m_Manager.IsStepRemembered ? " · saved" : string.Empty)}");
+                        $"  (0 = best)");
             m_Lines.Add($"Applied     {m_Manager.CurrentStep}");
+            m_Lines.Add($"Ladder      perf {m_Manager.PerfStep}{penalty}{floor}");
+            m_Lines.Add($"Proven      {proven}");
             m_Lines.Add($"State       {phase} · {m_Manager.LastReason}" +
                         $"{(m_Manager.AllowAdjustments ? string.Empty : " · BLOCKED")}");
         }

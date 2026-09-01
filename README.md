@@ -21,7 +21,7 @@ Unity 2022.3 LTS or newer · URP 14+ · Android and iOS · no dependencies.
 **Window → Package Manager → `+` → Add package from git URL**, then paste:
 
 ```
-https://github.com/eliranshaya/Unity-MobileAdjustGameQuality.git?path=/Packages/com.eliranshaya.mobileadjustgamequality#v3.2.3
+https://github.com/eliranshaya/Unity-MobileAdjustGameQuality.git?path=/Packages/com.eliranshaya.mobileadjustgamequality#v3.3.0
 ```
 
 That is the current release — the green badge above always shows the newest tag, and swapping
@@ -44,7 +44,7 @@ the last release. Pin the tag for anything you ship.
 ```json
 {
   "dependencies": {
-    "com.eliranshaya.mobileadjustgamequality": "https://github.com/eliranshaya/Unity-MobileAdjustGameQuality.git?path=/Packages/com.eliranshaya.mobileadjustgamequality#v3.2.3"
+    "com.eliranshaya.mobileadjustgamequality": "https://github.com/eliranshaya/Unity-MobileAdjustGameQuality.git?path=/Packages/com.eliranshaya.mobileadjustgamequality#v3.3.0"
   }
 }
 ```
@@ -98,8 +98,10 @@ That is all of it. Running Setup again updates in place.
 FPS         60 / 60
 Frame       17.0 p75 · 17.5 p95 · 17.7 worst
 Budget      16.7 ms   ok
-Step        0 of 0-8  (0 = best) · saved
+Step        0 of 0-8  (0 = best)
 Applied     1.00 · shadows 1024 · 60fps
+Ladder      perf 0 · floor 6
+Proven      0
 State       steady · Holding
 Thermal     cool · None · headroom 0.42
 ```
@@ -121,14 +123,23 @@ Thermal     cool · None · headroom 0.42
   without starting a descent
 - **Straight to 30 fps** when the device is not short of its target but on the wrong one —
   a stable 30 beats an unstable 44, and runs far cooler
-- **Up** only when the device is cool **and** holding, and much more slowly than it goes down
+- **Up** on frame times only when the device is cool **and** holding, and much more slowly
+  than it goes down
+- **Back up quickly** when the descent was thermal. Rungs given up to heat are a lease, not a
+  verdict: they are tracked separately and handed back as soon as the device cools, without
+  waiting for the frame times to justify anything
 
 Shadows are all or nothing. Shortening shadow distance instead would leave near objects
 shadowed and objects a metre behind them not, and that boundary reads as a bug rather than as
 lower quality.
 
-The rung a device settles on is remembered, so the next launch starts from a measurement
-instead of a guess.
+The best rung a device has **earned** is remembered — cool, inside budget, no thermal penalty —
+so the next launch starts from a measurement instead of a guess. A hot session can never lower
+it. And once a phone has proven it can hold 60 fps, the ladder stops at the last 60 fps rung
+rather than descending into the 30 fps ones, unless the OS is actively throttling.
+
+A device with no history yet gets a starting rung from its own GPU, memory and screen
+resolution rather than from one fixed number for the whole market.
 
 Thermal comes from `PowerManager` on Android and `NSProcessInfo.thermalState` on iOS, through
 a bundled plugin that a post-process build step verifies reached the Xcode project. You never

@@ -37,11 +37,15 @@ namespace MobileAdjustGameQuality
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Temperature is the one signal in this package that never lies. Frame time cannot show
-    /// spare capacity while a frame cap is active - the engine sleeps until the frame is due,
-    /// so a device holding its target reports exactly the budget however much headroom it
-    /// has. Thermal state has no such blind spot: it says outright how close the device is to
-    /// being throttled, and it says it the same way whether the game is capped or not.
+    /// Temperature is the only signal here that can show spare capacity. Frame time cannot,
+    /// while a frame cap is active - the engine sleeps until the frame is due, so a device
+    /// holding its target reports exactly the budget however much room it has to spare. The
+    /// thermal forecast has no such blind spot: it says outright how close the device is to
+    /// being throttled, capped or not.
+    /// </para>
+    /// <para>
+    /// That is the <i>forecast</i>. The thermal <i>status</i> is a different thing and a much
+    /// weaker one - see <see cref="AtLeast"/> for why it is not allowed to veto the forecast.
     /// </para>
     /// <para>
     /// Plain class rather than a MonoBehaviour: it owns a couple of handles and a poll
@@ -54,10 +58,28 @@ namespace MobileAdjustGameQuality
         const int k_HeadroomForecastSeconds = 10;
 
 #if UNITY_ANDROID && !UNITY_EDITOR
+        /// <summary>
+        /// Shortest gap allowed between two <c>getThermalHeadroom</c> calls, in seconds.
+        /// </summary>
+        /// <remarks>
+        /// Not a tunable, on purpose. Android's own documentation is explicit: "Don't call the
+        /// GetThermalHeadroom() API too frequently. If you do so, the API returns NaN. You
+        /// shouldn't call it more than once every 10 seconds." A field somebody could set to
+        /// five would not poll faster, it would silently stop returning a forecast at all, so
+        /// the platform's contract is enforced here rather than left to configuration. Fifteen
+        /// rather than ten is margin: the interval is measured from the previous call, and a
+        /// frame hitch either side of a ten-second timer lands inside the window.
+        /// <para>
+        /// The status has no such limit, which is why the two reads are paced separately.
+        /// </para>
+        /// </remarks>
+        const float k_MinHeadroomIntervalSeconds = 15f;
+
         AndroidJavaObject m_PowerManager;
         AndroidJavaObject m_Activity;
         int m_ApiLevel;
         bool m_Failed;
+        float m_NextHeadroomAt;
 #endif
 
 #if UNITY_IOS && !UNITY_EDITOR
@@ -93,24 +115,40 @@ namespace MobileAdjustGameQuality
         /// touching this file - see <see cref="AdaptationSettings.Band"/>.
         /// </para>
         /// <para>
-        /// Either signal alone is enough. They are not redundant: the status is what the OS
-        /// has already decided, and the headroom forecast is where it expects to be in ten
-        /// seconds, so on Android 11+ the forecast usually crosses first. On iOS and on older
-        /// Android there is no forecast at all and <see cref="Headroom"/> stays
-        /// <c>NaN</c>, which fails the comparison and leaves the status to decide alone.
+        /// The two signals are <b>not</b> equals, and treating them as equals is what made
+        /// this package strand a cool device on the bottom rung. Android's own documentation
+        /// says the status is frequently stale - "If GetThermalHeadroom() returns a high value
+        /// and GetCurrentThermalStatus() still returns THERMAL_STATUS_NONE, the status is
+        /// likely not updated ... we recommend using getThermalHeadroom instead" - and it is
+        /// stale in both directions. It reads <c>NONE</c> on a device that is already hot, and
+        /// it sits on <c>LIGHT</c> long after one has cooled down. A device reporting
+        /// <c>LIGHT</c> with a forecast of 0.51 is not throttled; it is a status that has not
+        /// caught up.
+        /// </para>
+        /// <para>
+        /// So where a forecast exists it decides alone. There is one exception:
+        /// <see cref="ThermalLevel.Severe"/> and above is not a forecast, it is the OS
+        /// reporting that it is clocking the chip down right now, and that is never ignored
+        /// however comfortable the prediction looks.
+        /// </para>
+        /// <para>
+        /// On iOS and on Android 10 and older there is no forecast at all,
+        /// <see cref="Headroom"/> stays <c>NaN</c>, and the status decides on its own.
         /// </para>
         /// </remarks>
         /// <param name="level">Status at or above which this returns true.</param>
         /// <param name="headroom">Headroom at or above which this returns true.</param>
-        /// <returns>True when either signal has reached its threshold.</returns>
+        /// <returns>True when the device has reached the threshold.</returns>
         public bool AtLeast(ThermalLevel level, float headroom)
         {
             // Unknown is -1, so it compares below every real level and never trips a band on
             // a platform with no thermal API.
-            if (Level != ThermalLevel.Unknown && Level >= level)
-                return true;
+            bool statusSays = Level != ThermalLevel.Unknown && Level >= level;
 
-            return !float.IsNaN(Headroom) && Headroom >= headroom;
+            if (float.IsNaN(Headroom))
+                return statusSays;
+
+            return Headroom >= headroom || (statusSays && Level >= ThermalLevel.Severe);
         }
 
         /// <summary>
@@ -159,9 +197,15 @@ namespace MobileAdjustGameQuality
                     Level = (ThermalLevel)Mathf.Clamp(m_PowerManager.Call<int>("getCurrentThermalStatus"), 0, 4);
 
                 // getThermalHeadroom() is API 30 (Android 11) and is the better signal: it is
-                // a forecast, so it moves before the status does.
-                if (m_ApiLevel >= 30)
+                // a forecast, so it moves before the status does. It is also the one call
+                // here with a rate limit, so it runs on its own timer rather than on the
+                // caller's - see k_MinHeadroomIntervalSeconds.
+                float now = Time.realtimeSinceStartup;
+
+                if (m_ApiLevel >= 30 && now >= m_NextHeadroomAt)
                 {
+                    m_NextHeadroomAt = now + k_MinHeadroomIntervalSeconds;
+
                     float headroom = m_PowerManager.Call<float>("getThermalHeadroom", k_HeadroomForecastSeconds);
 
                     // NaN means "polled too fast" or "no prediction yet". Keep the last good

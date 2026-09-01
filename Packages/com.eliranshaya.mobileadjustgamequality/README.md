@@ -10,7 +10,7 @@ device by moving along a quality ladder, driven by frame times and by how hot th
 **Window → Package Manager → + → Add package from git URL:**
 
 ```
-https://github.com/eliranshaya/Unity-MobileAdjustGameQuality.git?path=/Packages/com.eliranshaya.mobileadjustgamequality#v3.2.3
+https://github.com/eliranshaya/Unity-MobileAdjustGameQuality.git?path=/Packages/com.eliranshaya.mobileadjustgamequality#v3.3.0
 ```
 
 Leaving the `#v…` off tracks the newest commit on `main` instead. Pin the tag for anything you
@@ -18,6 +18,16 @@ ship — and note that Package Manager resolves a git URL exactly once either wa
 commit in `Packages/packages-lock.json`, so **updating means editing the tag in
 `Packages/manifest.json`**, not pressing anything in the UI.
 [All releases](https://github.com/eliranshaya/Unity-MobileAdjustGameQuality/tags).
+
+### Upgrading to 3.3 from an earlier version
+
+**Re-run `Tools > Mobile Quality > Setup`.** Several adaptation defaults changed, and Unity
+keeps whatever an existing prefab already has serialized — most importantly the thermal poll
+interval, which is 5 seconds now and 30 in a prefab built by 3.2. Setup rebuilds the prefab
+from scratch, so one press is enough. The alternative is editing those fields by hand.
+
+The rung remembered by 3.2 is discarded automatically on first run: it recorded where the last
+session stopped rather than what the device proved, so it means something different now.
 
 Requires Unity 2022.3 LTS or newer and URP 14+, which installs automatically. URP must be the
 active pipeline in **Project Settings → Graphics**.
@@ -93,16 +103,46 @@ holding 60 both report 16.67 ms.
 **Temperature** answers *is the device in trouble?* with no blind spot, on both platforms,
 capped or not.
 
-So going down is driven by either. Coming back up needs the device to be cool **and** holding
-its target.
+So going down is driven by either — but the two are **recorded separately**, and that is the
+part that matters.
+
+The applied rung is a sum of two numbers:
+
+```
+applied rung  =  perf rung  +  thermal penalty
+```
+
+**Perf rung** is what this device is believed to be capable of. It moves only on frame times,
+and only while the device is cool enough for those frame times to mean anything. It is kept.
+
+**Thermal penalty** is a temporary charge on top, added because the device is hot and removed
+again when it is not. It is a lease, not a verdict, and it expires on its own.
+
+Keeping them apart is the whole point. When heat and performance wrote to the same number, a
+phone that got warm once walked to the bottom of the ladder and stayed there for the rest of
+the session — and for every session after it, because the rung it was stranded on was then
+remembered as the rung it belonged on. Nothing recorded that the descent had been thermal, so
+nothing could undo it.
 
 | Trigger | Condition | Then |
 | --- | --- | --- |
-| Missing target | frame time > budget × 1.08 for 3 s | down one rung |
+| Missing target, cool | frame time > budget × 1.08 for 3 s | down one rung, charged to the **perf rung** |
+| Missing target, warm | the same, but not cool | down one rung, charged to the **penalty** |
 | **Wrong frame rate** | frame time > budget × 1.35 for 3 s | **jump straight to the first 30 fps rung** |
-| Heat | device in the **Shed** band | down one rung, every 30 s |
-| Urgent heat | device in the **Urgent** band | down one rung, as fast as the ladder allows |
-| Recovered | **fully cool** *and* frame time ≤ budget × 1.05 for 20 s | up one rung |
+| Heat | device in the **Shed** band | penalty +1, every 30 s |
+| Urgent heat | device in the **Urgent** band | penalty +1, as fast as the ladder allows |
+| **Cooling** | device **fully cool**, penalty outstanding | penalty −1, every 10 s |
+| Recovered | fully cool, no penalty, frame time ≤ budget × 1.05 for 20 s | perf rung up one |
+
+A warm device charges its drops to the penalty because the frames may be the device or may be
+the throttling, and there is no way to tell those apart from inside the game. A cool one has no
+such ambiguity, so what it measures is kept.
+
+Coming back up is not symmetric either, and deliberately so. Climbing the **perf rung** needs
+real evidence: cool, inside budget, for twenty seconds. Handing back a **penalty** needs no
+evidence at all beyond the heat being gone — nothing was measured to take those rungs away, and
+at a capped rung the frame times could not justify returning them anyway, because the cap pins
+them to the budget however much room the device has.
 
 The wrong-frame-rate jump is the one that matters most in practice. 1.35 is roughly 44 fps
 against a 60 target — at that point the device is not short of its target, it is on the wrong
@@ -114,6 +154,22 @@ It lands on the **first** 30 fps rung below the current one — rung 7 in the sh
 which is also the ladder's cheapest 60 fps rung with the frame rate halved. That is a large
 single step from the top. If you want a gentler landing, insert a 30 fps rung with shadows
 still on above it; the governor jumps to whichever it finds first.
+
+### The frame rate floor
+
+Once a device has **proven** a 60 fps rung — see [Memory](#memory) — the ladder stops at the
+last rung that still runs at 60 rather than descending into the 30 fps rungs below it. On the
+shipping ladder that is rung 6. A phone that demonstrated it can hold 60 should not quietly end
+up at 30 because it spent an afternoon in a warm room.
+
+The floor is derived from the ladder, not written down as an index: it is the last rung whose
+target frame rate matches the one the device proved. A device that has only ever proven a 30 fps
+rung floors at the last rung, which is no floor at all.
+
+This is the one guard in the package that can refuse a downward step, so it has exactly one
+exception: from the **Urgent** band upward it is ignored. At that point the OS is clocking the
+chip down itself, holding 60 in the settings does not hold 60 on screen, and refusing to
+descend protects nothing. Turn the whole thing off with `Protect Proven Frame Rate`.
 
 ### Why p75 and not p95
 
@@ -153,21 +209,90 @@ Note what actually controls how fast calibration converges: the **window lengths
 check rate. A 2.5-second sustain window cannot fire more than once every 2.5 seconds however
 often it is asked.
 
-Temperature is polled every **30 seconds**. It moves on the scale of minutes, and on Android
-asking faster than once a second returns NaN.
+The thermal **status** is polled every **5 seconds**. It used to be 30, which was longer than
+the twenty-second window a device has to stay cool for before the ladder climbs — so a single
+stale reading could block a climb for the whole window it covered.
+
+The **headroom forecast** is paced separately, inside `ThermalSensor`, at no more than one call
+every 15 seconds. That is not a tunable: Android's documentation says *"Don't call the
+GetThermalHeadroom() API too frequently. If you do so, the API returns NaN. You shouldn't call
+it more than once every 10 seconds."* A setting somebody could turn down to five would not poll
+faster, it would silently stop returning a forecast at all, so the platform's contract is
+enforced in code instead.
 
 ---
 
 ## Memory
 
-The rung a device settles on is written to `PlayerPrefs` after it has held for 10 seconds, and
-the next launch starts there. A rung that held on real hardware is a measurement; anything
-decided at startup is a guess.
+What is stored is the **best rung this device has earned**, not the rung the last session
+happened to stop on. That one word was a real bug: a session that ended hot ended at the bottom
+of the ladder, so the bottom of the ladder is what got written, and the next launch started
+there on a cold phone with no way to climb out. One warm evening permanently downgraded the
+device.
+
+A rung counts as **proven** when the device has spent `Proven After Seconds` — 120 by default —
+on it while:
+
+- settled (not in the window just after a change), and
+- inside its frame budget, and
+- **cool**, and
+- with **no thermal penalty outstanding**.
+
+That last condition is what makes it a measurement rather than a coincidence. With a penalty
+applied the game is running easier than the rung being judged, so holding it proves nothing.
+And because heat can never contribute, a hot session cannot lower the stored value.
+
+The time is **accumulated, not continuous**. A player who pauses, loads a level or takes a call
+has not stopped proving anything about their phone.
+
+Only improvements are written. A session that could not reach last month's best has not
+disproved it — it may simply have been a hot afternoon or a heavier level. The cost of a
+high-water mark is that a device whose game has since grown heavier starts a rung or two too
+high and pays a short calibration for it; that is half a minute of adjustment against a
+permanent downgrade, so it is the right way round.
 
 The ladder's length is stored alongside it, so editing the ladder discards a remembered rung
-rather than applying it to the wrong row.
+rather than applying it to the wrong row. A value written by a version older than 3.3 is
+discarded outright, because it means something different.
 
 `Tools > Mobile Quality > Forget Remembered Step` clears it.
+
+---
+
+## Which rung the game opens on
+
+In descending order of how much the answer is worth:
+
+| # | Source | When |
+| --- | --- | --- |
+| 1 | **The proven rung** | this device has earned one, in this session or an earlier one |
+| 2 | **The device profile** | it has not, and `Use Device Profiler` is on |
+| 3 | **`Start Step`** | the profiler is off |
+
+A measurement always wins. Below that, the device's own hardware is a far better guess than one
+fixed number for a market that runs from a 4 GB budget phone to current flagship silicon.
+
+`DeviceProfiler` scores the GPU (`SystemInfo.graphicsDeviceName`, 60 %) against memory (40 %),
+then multiplies by how much the panel's resolution changes the workload — a 1440p screen is 1.8×
+the pixels of a 1080p one, which for a package whose main lever is render scale matters as much
+as the chip does. The score maps to a fraction of the ladder, so editing the ladder does not
+silently change what "start a flagship high" means.
+
+Memory is scored on **two different scales**, because the number means two different things.
+Apple ships far less of it for the same class of device — an iPhone 15 Pro has 8 GB where an
+Android flagship of the same year has 12 to 16 — so an iPhone 13, which is a 4 GB A15, scored as
+a budget Android phone and started three rungs lower than it deserved.
+
+It is a score rather than a chain of special cases because a score degrades gracefully when one
+signal cannot be read, and can be re-tuned by moving a number.
+
+**An unrecognised GPU scores as mid-range, never as low.** New parts ship every year and the
+table cannot know about them, so the failure mode has to be *a new flagship starts one rung
+lower than it deserved for thirty seconds* rather than *every new flagship launches on the worst
+rung on the ladder*.
+
+This is only ever a guess, and it is treated as one — calibration runs straight afterwards
+either way, so a wrong guess costs a rough half-minute rather than a bad session.
 
 ---
 
@@ -200,6 +325,23 @@ The right response to `LIGHT` is to stop asking for more, not to start giving th
 | **Urgent** | `SEVERE`+ | ≥ 1.0 | serious, critical | one rung per evaluation |
 
 Every threshold — the status *and* the headroom for each band — is a field on the prefab.
+
+### The forecast outranks the status
+
+Where a headroom forecast exists, **it decides alone**. The two signals are not equals, and
+treating them as equals is what stranded a cooled phone on the bottom rung: a device reporting
+`LIGHT` with a forecast of 0.51 is not throttled, it is a status that has not caught up, and
+under an either-signal rule that stale bit vetoed every attempt to climb back.
+
+Android says as much itself: *"If GetThermalHeadroom() returns a high value and
+GetCurrentThermalStatus() still returns THERMAL_STATUS_NONE, the status is likely not updated
+... we recommend using getThermalHeadroom instead."* It is stale in both directions.
+
+One exception. `SEVERE` and above is not a forecast — it is the OS reporting that it is clocking
+the chip down right now — and that is never ignored however comfortable the prediction looks.
+
+On iOS and on Android 10 and older there is no forecast at all, and the status decides on its
+own.
 
 `Shed` is where Google's own guidance says to start reducing, and it is deliberately before
 the player feels anything: waiting for frames to suffer means waiting for the OS to have
@@ -243,7 +385,7 @@ Two gates. The `MAQ_DEVELOPER_MODE` define decides whether the overlay **exists*
 **Show** checkbox decides whether it is **drawn**. A single developer build can go to testers
 with the HUD off, and a release build carries none of it — the class does not exist there.
 
-The default is ten lines:
+The default is twelve lines:
 
 ```
 MOBILE QUALITY                              X
@@ -252,11 +394,21 @@ FPS         60 / 60
 Frame       16.9 p75 · 17.8 p95 · 92.2 worst
 Budget      16.7 ms   ok
 ADAPTATION
-Step        2 of 0-8  (0 = best) · saved
+Step        2 of 0-8  (0 = best)
 Applied     0.80 · shadows 512 · 60fps
+Ladder      perf 2 · floor 6
+Proven      2
 State       steady · Holding
 THERMAL
 Thermal     cool · None · headroom 0.42
+```
+
+`Ladder` is the line to read when something looks wrong. It splits the applied rung into its
+two parts, because a rung lost to heat reads very differently from a rung lost to frame times
+and only one of them is going to come back on its own:
+
+```
+Ladder      perf 2 + 6 heat · floor 6
 ```
 
 `Fields` also offers **Quality**, **URP**, **Device**, **Screen**, **Memory** and **Adaptive

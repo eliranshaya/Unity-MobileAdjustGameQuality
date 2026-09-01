@@ -70,6 +70,49 @@ namespace MobileAdjustGameQuality
         }
 
         /// <summary>
+        /// The worst rung that still runs at <paramref name="frameRate"/> or better.
+        /// </summary>
+        /// <param name="frameRate">The frame rate to keep.</param>
+        /// <returns>A rung index. The last rung when nothing on the ladder is slower.</returns>
+        public int LastStepAtFrameRate(int frameRate)
+        {
+            if (steps == null || steps.Length == 0)
+                return 0;
+
+            int last = 0;
+
+            for (int i = 0; i < steps.Length; i++)
+            {
+                if (steps[i].targetFrameRate >= frameRate)
+                    last = i;
+            }
+
+            return last;
+        }
+
+        /// <summary>
+        /// The worst rung the ladder should descend to for a device that has proven
+        /// <paramref name="provenStep"/>.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// A phone that has held a 60 fps rung on merit has told you something, and dropping
+        /// it to 30 later contradicts it. So the floor is the last rung that still runs at the
+        /// frame rate the device proved it can hold - on the shipping ladder, a device that
+        /// proved any of rungs 0-6 floors at rung 6, the last 60 fps rung.
+        /// </para>
+        /// <para>
+        /// Derived from the ladder rather than written down as an index, so adding or removing
+        /// rungs cannot leave a hardcoded floor pointing at the wrong one. A device that only
+        /// ever proved a 30 fps rung floors at the last rung, which is no floor at all.
+        /// </para>
+        /// </remarks>
+        /// <param name="provenStep">The best rung this device has held on merit.</param>
+        /// <returns>The worst rung a normal descent may reach.</returns>
+        public int FloorStepFor(int provenStep) =>
+            LastStepAtFrameRate(Step(provenStep).targetFrameRate);
+
+        /// <summary>
         /// The shipping ladder.
         /// </summary>
         /// <remarks>

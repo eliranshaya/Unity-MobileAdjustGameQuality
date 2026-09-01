@@ -41,8 +41,13 @@ namespace MobileAdjustGameQuality
     /// answers "is the device in trouble?" with no blind spot at all.
     /// </para>
     /// <para>
-    /// So going down is driven by either. Coming back up needs the device to be cool
-    /// <i>and</i> holding its target.
+    /// So going down is driven by either - but the two are recorded separately and come back
+    /// differently, which is the part that matters. A rung lost to frame times on a cool
+    /// device is a fact about the device and is kept; climbing back needs the device to be
+    /// cool <i>and</i> holding its target for a long window. A rung lost to heat is a lease,
+    /// and it expires on its own as soon as the device is cool again, without waiting for the
+    /// frame times to prove anything - because nothing was measured to take it away, and at a
+    /// capped rung the frame times could not prove it anyway.
     /// </para>
     /// <para>
     /// The session has two phases. <b>Calibration</b> runs at the start, checks aggressively
@@ -58,10 +63,26 @@ namespace MobileAdjustGameQuality
                  "starting rung.")]
         public bool enabled = true;
 
-        [Tooltip("Which rung a device with no history starts on. The shipping ladder's rung 2 " +
-                 "is 0.8 render scale, shadows on, 60 fps.")]
+        [Tooltip("Which rung a device with no history and no readable hardware starts on. " +
+                 "The last resort: a rung proven on this device wins, and a guess from the " +
+                 "device's own hardware beats this one. The shipping ladder's rung 2 is 0.8 " +
+                 "render scale, shadows on, 60 fps.")]
         [Min(0)]
         public int startStep = 2;
+
+        [Tooltip("On a device with no proven rung yet, guess a starting rung from its GPU, " +
+                 "memory and screen resolution instead of using Start Step. Only ever a " +
+                 "guess - calibration runs straight afterwards either way - but it is the " +
+                 "difference between one fixed starting rung for a market that runs from a " +
+                 "4GB budget phone to current flagship silicon.")]
+        public bool useDeviceProfiler = true;
+
+        [Tooltip("Once this device has held a 60 fps rung on merit, stop the ladder at the " +
+                 "last 60 fps rung instead of descending into the 30 fps ones. A phone that " +
+                 "proved it can hold 60 should not quietly end up at 30. Ignored when the " +
+                 "device reaches the urgent thermal band, where the OS is clocking the chip " +
+                 "down itself and refusing to descend protects nothing.")]
+        public bool protectProvenFrameRate = true;
 
         [Tooltip("In the Unity editor, pin the ladder to rung 0 and never move it. A desktop " +
                  "running a mobile game has performance to spare, so the only thing adaptation " +
@@ -70,14 +91,16 @@ namespace MobileAdjustGameQuality
                  "ladder work. Has no effect in a player build - the check is compiled out.")]
         public bool bestStepInEditor = true;
 
-        [Tooltip("Remember the rung this device settled on and start there next launch. A " +
-                 "measurement from the last session beats any guess made at startup.")]
-        public bool rememberLastStep = true;
+        [Tooltip("Remember the best rung this device has earned and start there next launch. " +
+                 "A measurement from a previous session beats any guess made at startup.")]
+        public bool rememberProvenStep = true;
 
-        [Tooltip("Seconds a rung must hold before it is written to PlayerPrefs. Stops a " +
-                 "device that is still calibrating from writing on every change.")]
-        [Range(1f, 120f)]
-        public float rememberAfterSeconds = 10f;
+        [Tooltip("Seconds a rung must be held on merit - settled, inside budget, cool, and " +
+                 "with no thermal penalty outstanding - before it counts as proven and is " +
+                 "written to PlayerPrefs. Accumulated, not continuous: a player who pauses " +
+                 "or loads a level has not stopped proving anything about their phone.")]
+        [Range(10f, 600f)]
+        public float provenAfterSeconds = 120f;
 
         [Header("Calibration")]
         [Tooltip("Seconds after startup during which nothing is judged at all. The first " +
@@ -113,11 +136,13 @@ namespace MobileAdjustGameQuality
         [Range(0.05f, 5f)]
         public float checkEverySeconds = 0.25f;
 
-        [Tooltip("How often the thermal API is read. Temperature moves on the scale of " +
-                 "minutes, so there is nothing to gain from asking more often - and on " +
-                 "Android asking faster than once a second returns NaN.")]
+        [Tooltip("How often the thermal status is read. This used to be 30, which was longer " +
+                 "than the window a device has to be cool for before the ladder climbs - so " +
+                 "a single stale reading could block a climb for the whole window it " +
+                 "covered. The headroom forecast is paced separately inside ThermalSensor, " +
+                 "because Android rate-limits that call and returns NaN if you ignore it.")]
         [Range(1f, 120f)]
-        public float thermalPollSeconds = 30f;
+        public float thermalPollSeconds = 5f;
 
         [Tooltip("Seconds of measurement ignored after every change, so a rung is judged on " +
                  "settled frames rather than on the reload that follows it.")]
@@ -125,7 +150,7 @@ namespace MobileAdjustGameQuality
         public float settleSeconds = 1f;
 
         [Header("Going down")]
-        [Tooltip("p95 frame time above budget x this counts as missing the target.")]
+        [Tooltip("p75 frame time above budget x this counts as missing the target.")]
         [Range(1f, 1.5f)]
         public float missTargetFactor = 1.08f;
 
@@ -138,7 +163,7 @@ namespace MobileAdjustGameQuality
         public float dropCooldownSeconds = 2f;
 
         [Header("Going down: badly missing")]
-        [Tooltip("p95 above budget x this means the device is not merely short, it is on the " +
+        [Tooltip("p75 above budget x this means the device is not merely short, it is on the " +
                  "wrong frame rate entirely. 1.35 is roughly 44 fps against a 60 target. " +
                  "Rather than walking down one rung at a time while it overheats, the ladder " +
                  "jumps straight to the first rung that lowers the frame rate: a stable 30 " +
@@ -198,6 +223,23 @@ namespace MobileAdjustGameQuality
                  "two if you would rather the descent be visible as a slide than a jump.")]
         [Range(0f, 30f)]
         public float urgentStepSeconds;
+
+        [Header("Cooling down")]
+        [Tooltip("Seconds of being cool before one rung given up to heat is handed back. " +
+                 "Deliberately much shorter than the climb window below: nothing was " +
+                 "measured to take these rungs away, so nothing has to be measured to give " +
+                 "them back - only the heat that caused it has to be gone.")]
+        [Range(1f, 120f)]
+        public float thermalRecoverySeconds = 10f;
+
+        [Tooltip("Seconds in the background after which returning hands back every rung " +
+                 "given up to heat at once, rather than one at a time. A phone that has not " +
+                 "rendered for a minute has genuinely cooled, and the frame the app comes " +
+                 "back on is the one moment where a large visual change costs nothing - " +
+                 "nothing is in motion to see it happen. If the device is in fact still hot, " +
+                 "the shedding loop puts the penalty back within the minute.")]
+        [Range(5f, 600f)]
+        public float backgroundedRecoverySeconds = 60f;
 
         [Header("Coming back up")]
         [Tooltip("Frame time at or below budget x this counts as holding the target. It sits " +

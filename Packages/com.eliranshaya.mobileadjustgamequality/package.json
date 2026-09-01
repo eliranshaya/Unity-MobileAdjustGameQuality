@@ -1,6 +1,6 @@
 {
   "name": "com.eliranshaya.mobileadjustgamequality",
-  "version": "3.2.3",
+  "version": "3.3.0",
   "displayName": "Mobile Adjust Game Quality",
   "description": "Generates one mobile-tuned URP asset, renderer and quality level, applies the recommended mobile Player Settings, and gives you a prefab that keeps the frame budget on the device. Quality is one number - which rung of a nine-rung ladder is applied - moved by measured frame times and by the thermal state the OS reports, on Android and iOS. Includes a developer overlay.",
   "unity": "2022.3",

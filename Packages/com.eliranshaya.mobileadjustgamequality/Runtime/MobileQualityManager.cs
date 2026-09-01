@@ -21,6 +21,12 @@ namespace MobileAdjustGameQuality
     /// both platforms, capped or not.
     /// </para>
     /// <para>
+    /// The two are kept apart all the way through. <see cref="QualityGovernor"/> holds a rung
+    /// this device is believed capable of and a separate, expiring penalty for heat;
+    /// <see cref="ProvenStepTracker"/> records only the rungs held on merit, so a hot
+    /// afternoon can never be mistaken for a slow phone.
+    /// </para>
+    /// <para>
     /// Runs early (<c>-1000</c>) so quality is settled before any camera or volume reads
     /// graphics state, and survives scene loads via <c>DontDestroyOnLoad</c>.
     /// </para>
@@ -50,19 +56,19 @@ namespace MobileAdjustGameQuality
         // Constructed once and reused. A `new WaitForSeconds` inside a loop would allocate on
         // every iteration, forever. Realtime rather than scaled, so both loops keep running
         // while the game sits at timeScale = 0 in a pause menu.
-        readonly WaitForSecondsRealtime m_ThermalWait = new WaitForSecondsRealtime(30f);
+        readonly WaitForSecondsRealtime m_ThermalWait = new WaitForSecondsRealtime(5f);
         readonly WaitForSecondsRealtime m_CheckWait = new WaitForSecondsRealtime(0.25f);
 
         FrameTimeSampler m_Sampler;
         ThermalSensor m_Thermal;
         QualityGovernor m_Governor;
+        ProvenStepTracker m_Proven;
         UniversalRenderPipelineAsset m_UrpAsset;
 
         float m_LastCheckTime;
         float m_CalibrationEndsAt;
         float m_GraceEndsAt;
-        float m_StepStableSince;
-        bool m_StepRemembered;
+        DateTime m_BackgroundedAt = DateTime.MinValue;
 
         /// <summary>The live instance, or <c>null</c> before the prefab has awoken.</summary>
         public static MobileQualityManager Instance { get; private set; }
@@ -89,10 +95,33 @@ namespace MobileAdjustGameQuality
         public UniversalRenderPipelineAsset UrpAsset => m_UrpAsset;
 
         /// <summary>Which rung of the ladder is applied.</summary>
-        public int CurrentStepIndex { get; private set; }
+        public int CurrentStepIndex => m_Governor != null ? m_Governor.AppliedStep : 0;
 
         /// <summary>The rung that is applied.</summary>
         public QualityStep CurrentStep => profile.Step(CurrentStepIndex);
+
+        /// <summary>
+        /// The rung this device is believed capable of, before any allowance for heat.
+        /// </summary>
+        public int PerfStep => m_Governor != null ? m_Governor.PerfStep : 0;
+
+        /// <summary>How many rungs are currently being given up to heat. Zero when cool.</summary>
+        public int ThermalPenalty => m_Governor != null ? m_Governor.ThermalPenalty : 0;
+
+        /// <summary>
+        /// The best rung this device has held on merit, or
+        /// <see cref="ProvenStepTracker.Nothing"/> when it has not proven one yet.
+        /// </summary>
+        public int ProvenStep => m_Proven != null ? m_Proven.BestProvenStep : ProvenStepTracker.Nothing;
+
+        /// <summary>True once this device has proven a rung, this session or an earlier one.</summary>
+        public bool IsStepProven => m_Proven != null && m_Proven.HasProof;
+
+        /// <summary>
+        /// The worst rung a normal descent may reach, from the frame rate this device has
+        /// proven it can hold. <see cref="int.MaxValue"/> means no floor.
+        /// </summary>
+        public int FloorStep => m_Governor != null ? m_Governor.FloorStep : int.MaxValue;
 
         /// <summary>Why the ladder last moved, or did not.</summary>
         public QualityGovernor.Reason LastReason =>
@@ -110,9 +139,6 @@ namespace MobileAdjustGameQuality
 
         /// <summary>True while the opening grace is still running and nothing is judged.</summary>
         public bool IsInStartupGrace => Time.unscaledTime < m_GraceEndsAt;
-
-        /// <summary>True once the current rung has held long enough to be written to PlayerPrefs.</summary>
-        public bool IsStepRemembered => m_StepRemembered;
 
         /// <summary>
         /// Gate for gameplay. Set to <c>false</c> during a cutscene or anything else where a
@@ -172,8 +198,11 @@ namespace MobileAdjustGameQuality
             Instance = this;
             DontDestroyOnLoad(gameObject);
 
+            int ladderSize = profile.steps != null ? profile.steps.Length : 1;
+
             m_Sampler = new FrameTimeSampler(k_SampleCount);
-            m_Governor = new QualityGovernor(adaptation, profile.steps != null ? profile.steps.Length : 1);
+            m_Governor = new QualityGovernor(adaptation, ladderSize);
+            m_Proven = new ProvenStepTracker(ladderSize);
             AdaptivePerformance = new AdaptivePerformanceBridge();
 
             m_Thermal = new ThermalSensor();
@@ -182,25 +211,7 @@ namespace MobileAdjustGameQuality
 
             ApplyQualityLevel();
 
-            // A rung that held on real hardware last session is a measurement; startStep is a
-            // guess. Prefer the measurement.
-            int start = profile.ClampStep(adaptation.startStep);
-            string origin = "default";
-
-            if (IsPinnedToBest)
-            {
-                // Not the remembered rung either: a rung remembered in the editor was measured
-                // on a desktop, and starting a Play session on it would be the same guess with
-                // an extra step.
-                start = 0;
-                origin = "editor (pinned to the best rung)";
-            }
-            else if (adaptation.rememberLastStep
-                     && QualityStepMemory.TryLoad(profile.steps.Length, out int remembered))
-            {
-                start = profile.ClampStep(remembered);
-                origin = "remembered from the last session";
-            }
+            int start = ResolveStartStep(ladderSize, out string origin);
 
             if (IsPinnedToBest)
             {
@@ -218,6 +229,45 @@ namespace MobileAdjustGameQuality
             }
 
             ApplyStep(start, origin);
+            RefreshFloor();
+        }
+
+        /// <summary>
+        /// Chooses the rung to open on, in descending order of how much the answer is worth.
+        /// </summary>
+        /// <remarks>
+        /// A rung this device proved on real hardware is a measurement and always wins. Below
+        /// that, the device's own GPU, memory and screen are a far better guess than one fixed
+        /// number for the whole market. <c>startStep</c> is the last resort.
+        /// </remarks>
+        int ResolveStartStep(int ladderSize, out string origin)
+        {
+            if (IsPinnedToBest)
+            {
+                // Not the proven rung either: a rung proven in the editor was proven on a
+                // desktop, and opening a Play session on it is the same guess with an extra
+                // step in front of it.
+                origin = "editor (pinned to the best rung)";
+                return 0;
+            }
+
+            if (adaptation.rememberProvenStep && QualityStepMemory.TryLoad(ladderSize, out int proven))
+            {
+                // Seeded rather than merely applied, so the frame rate floor this device
+                // earned is in force from the first second rather than after it re-proves it.
+                m_Proven.Seed(proven);
+                origin = "proven on this device";
+                return profile.ClampStep(proven);
+            }
+
+            if (adaptation.useDeviceProfiler)
+            {
+                origin = "device profile";
+                return profile.ClampStep(DeviceProfiler.SuggestStep(ladderSize));
+            }
+
+            origin = "default";
+            return profile.ClampStep(adaptation.startStep);
         }
 
         void OnEnable()
@@ -231,6 +281,8 @@ namespace MobileAdjustGameQuality
         void Start()
         {
 #if MAQ_DEVELOPER_MODE
+            QualityDevLog.Log($"Device profile: {DeviceProfiler.Describe()}");
+
             // Added from code, never from the prefab. A serialized reference to a class that
             // is compiled out leaves a permanent "referenced script is missing" warning on
             // the GameObject in every release build.
@@ -251,9 +303,9 @@ namespace MobileAdjustGameQuality
         /// The only per-frame work: one ring buffer write.
         /// </summary>
         /// <remarks>
-        /// This cannot be a coroutine. A p95 is only meaningful if every frame is measured,
-        /// and a coroutine resuming each frame costs an iterator <c>MoveNext</c> plus a
-        /// scheduler visit - strictly more than this method call.
+        /// This cannot be a coroutine. A percentile is only meaningful if every frame is
+        /// measured, and a coroutine resuming each frame costs an iterator <c>MoveNext</c>
+        /// plus a scheduler visit - strictly more than this method call.
         /// </remarks>
         void Update()
         {
@@ -271,7 +323,10 @@ namespace MobileAdjustGameQuality
         void OnApplicationPause(bool paused)
         {
             if (paused)
+            {
+                m_BackgroundedAt = DateTime.UtcNow;
                 return;
+            }
 
             // Several Android OEMs reset the frame cap and re-enable vSync when the app
             // returns to the foreground, which shows up as "the game drops to 30 after a
@@ -282,6 +337,36 @@ namespace MobileAdjustGameQuality
             m_Thermal?.Poll();
             m_Governor.Reset(Time.unscaledTime);
             m_LastCheckTime = Time.unscaledTime;
+
+            RecoverFromBackground();
+        }
+
+        /// <summary>
+        /// Hands back everything given up to heat when the app returns from a long spell in
+        /// the background.
+        /// </summary>
+        /// <remarks>
+        /// A phone that has not rendered for a minute has genuinely cooled, and the frame the
+        /// app comes back on is the one moment where a large visual change costs nothing -
+        /// there is nothing in motion for the player to see it happen against. The fresh
+        /// reading is treated as permission to hand the rungs back rather than as proof that
+        /// keeping them is safe: Android updates the thermal status on its own cadence, so a
+        /// device that still reads warm keeps its penalty, and if handing it back turns out to
+        /// be wrong the shedding loop takes it away again within the minute.
+        /// </remarks>
+        void RecoverFromBackground()
+        {
+            if (m_BackgroundedAt == DateTime.MinValue)
+                return;
+
+            double away = (DateTime.UtcNow - m_BackgroundedAt).TotalSeconds;
+            m_BackgroundedAt = DateTime.MinValue;
+
+            if (away < adaptation.backgroundedRecoverySeconds || Heat >= HeatBand.Shed)
+                return;
+
+            if (m_Governor.ReleaseThermalPenalty())
+                ApplyResolvedStep("cooled while in the background");
         }
 
         IEnumerator ThermalRoutine()
@@ -330,7 +415,7 @@ namespace MobileAdjustGameQuality
 
             // Nothing is judged during the opening grace, and nothing is judged until the
             // window is full: a partial window is dominated by whatever happened during
-            // loading, and p95 over six frames is just "the worst frame".
+            // loading, and a percentile over six frames is just "one of the worst frames".
             if (!AllowAdjustments || now < m_GraceEndsAt || m_Sampler.Count < k_SampleCount)
             {
                 m_LastCheckTime = now;
@@ -349,52 +434,80 @@ namespace MobileAdjustGameQuality
                 return;
             }
 
+            RefreshFloor();
+
+            int previous = m_Governor.AppliedStep;
+
             int next = m_Governor.Evaluate(
                 now, elapsed,
                 m_Sampler.P75Ms,
                 CurrentStep.FrameBudgetMs,
-                CurrentStepIndex,
-                profile.WorstStep,
-                profile.FindLowerFrameRateStep(CurrentStepIndex),
+                profile.FindLowerFrameRateStep(previous),
                 Heat,
                 IsCalibrating);
 
-            if (next != CurrentStepIndex)
+            if (next != previous)
             {
-                ApplyStep(next, m_Governor.LastReason.ToString());
+                ApplyResolvedStep(m_Governor.LastReason.ToString());
                 return;
             }
 
-            RememberIfSettled(now);
+            RecordProof(elapsed);
         }
 
         /// <summary>
-        /// Writes the current rung to PlayerPrefs once it has held long enough to count as
-        /// where this device belongs, rather than somewhere it passed through.
+        /// Counts time towards proving the applied rung, and stores it once it is earned.
         /// </summary>
-        void RememberIfSettled(float now)
+        void RecordProof(float elapsed)
         {
-            if (!adaptation.rememberLastStep || m_StepRemembered)
+            if (!m_Governor.IsProving)
                 return;
 
-            if (now - m_StepStableSince < adaptation.rememberAfterSeconds)
+            if (!m_Proven.Accumulate(CurrentStepIndex, elapsed, adaptation.provenAfterSeconds))
                 return;
 
-            QualityStepMemory.Save(CurrentStepIndex, profile.steps.Length);
-            m_StepRemembered = true;
+            RefreshFloor();
+
+            if (adaptation.rememberProvenStep)
+                QualityStepMemory.Save(m_Proven.BestProvenStep, profile.steps.Length);
+        }
+
+        /// <summary>
+        /// Points the governor's floor at the last rung running at the frame rate this device
+        /// has proven it can hold.
+        /// </summary>
+        /// <remarks>
+        /// Recomputed rather than cached so that turning the setting off in the inspector
+        /// takes effect immediately, the way every other value here does. It is a walk over
+        /// nine ints.
+        /// </remarks>
+        void RefreshFloor()
+        {
+            m_Governor.FloorStep = adaptation.protectProvenFrameRate && m_Proven.HasProof
+                ? profile.FloorStepFor(m_Proven.BestProvenStep)
+                : int.MaxValue;
         }
 
         /// <summary>
         /// Moves to a rung of the ladder and applies it.
         /// </summary>
+        /// <remarks>
+        /// Treats the rung as this device's capability, so any outstanding thermal penalty is
+        /// cleared: an explicit choice is not something the ladder should then unwind from.
+        /// </remarks>
         /// <param name="index">Rung index, clamped to the ladder.</param>
         /// <param name="reason">Why, for the log.</param>
         public void ApplyStep(int index, string reason = "manual")
         {
-            int clamped = profile.ClampStep(index);
-            QualityStep step = profile.Step(clamped);
+            m_Governor.SetPerfStep(profile.ClampStep(index));
+            ApplyResolvedStep(reason);
+        }
 
-            CurrentStepIndex = clamped;
+        /// <summary>Applies whichever rung the governor currently resolves to.</summary>
+        void ApplyResolvedStep(string reason)
+        {
+            int index = CurrentStepIndex;
+            QualityStep step = profile.Step(index);
 
             if (m_UrpAsset != null)
             {
@@ -421,11 +534,8 @@ namespace MobileAdjustGameQuality
             m_Governor.Reset(Time.unscaledTime);
             m_Sampler.Reset();
 
-            m_StepStableSince = Time.unscaledTime;
-            m_StepRemembered = false;
-
-            QualityDevLog.Log($"Quality step {clamped}/{profile.WorstStep} — {step} ({reason}).");
-            OnStepChanged?.Invoke(clamped);
+            QualityDevLog.Log($"Quality step {index}/{profile.WorstStep} — {step} ({reason}).");
+            OnStepChanged?.Invoke(index);
         }
 
         void ApplyFrameRate(QualityStep step)
