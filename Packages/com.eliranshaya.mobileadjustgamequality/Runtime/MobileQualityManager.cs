@@ -503,6 +503,9 @@ namespace MobileAdjustGameQuality
             ApplyResolvedStep(reason);
         }
 
+        /// <summary>URP accepts 1, 2, 4 or 8; anything else is rounded down to the nearest.</summary>
+        static int ClampMsaa(int samples) => samples >= 8 ? 8 : samples >= 4 ? 4 : samples >= 2 ? 2 : 1;
+
         /// <summary>Applies whichever rung the governor currently resolves to.</summary>
         void ApplyResolvedStep(string reason)
         {
@@ -527,6 +530,15 @@ namespace MobileAdjustGameQuality
                 // and URP 17 does not, so assigning it here would not compile on 2022.3.
                 if (step.shadowsEnabled)
                     UrpCompat.TrySetMainLightShadowmapResolution(m_UrpAsset, step.shadowResolution);
+
+                // Only written when it changes: a new sample count reallocates the camera's
+                // render targets, so a step change that keeps MSAA must not pay for that.
+                if (step.OverridesMsaa)
+                {
+                    int msaa = ClampMsaa(step.msaaSampleCount);
+                    if (m_UrpAsset.msaaSampleCount != msaa)
+                        m_UrpAsset.msaaSampleCount = msaa;
+                }
             }
 
             ApplyFrameRate(step);

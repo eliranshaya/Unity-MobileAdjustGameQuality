@@ -42,6 +42,13 @@ namespace MobileAdjustGameQuality
         [Tooltip("Frame cap for this rung.")]
         public int targetFrameRate = 60;
 
+        [Tooltip("URP MSAA sample count for this rung: 1 (off), 2, 4 or 8. 0 leaves the URP " +
+                 "asset's own setting alone, which is how rungs authored before this field behave.")]
+        public int msaaSampleCount = 0;
+
+        /// <summary>True when this rung sets MSAA rather than leaving the asset's own.</summary>
+        public bool OverridesMsaa => msaaSampleCount > 0;
+
         /// <summary>True when this rung draws no shadows at all.</summary>
         public bool ShadowsOff => !shadowsEnabled;
 
@@ -51,6 +58,7 @@ namespace MobileAdjustGameQuality
         /// <summary>A one-line description for the overlay and the log.</summary>
         /// <returns>Something like <c>0.80 · shadows 512 · 60fps</c>.</returns>
         public override string ToString() =>
-            $"{renderScale:F2} · {(shadowsEnabled ? $"shadows {shadowResolution}" : "no shadows")} · {targetFrameRate}fps";
+            $"{renderScale:F2} · {(shadowsEnabled ? $"shadows {shadowResolution}" : "no shadows")}" +
+            $"{(OverridesMsaa ? $" · msaa {msaaSampleCount}x" : "")} · {targetFrameRate}fps";
     }
 }
