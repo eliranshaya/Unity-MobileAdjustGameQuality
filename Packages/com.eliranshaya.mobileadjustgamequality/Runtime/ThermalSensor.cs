@@ -33,7 +33,7 @@ namespace MobileAdjustGameQuality
     }
 
     /// <summary>
-    /// Reads the platform thermal API on Android and iOS.
+    /// Reads the platform thermal API on Android. iOS is off unless <c>MAQ_IOS_THERMAL</c> is defined.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -82,7 +82,11 @@ namespace MobileAdjustGameQuality
         float m_NextHeadroomAt;
 #endif
 
-#if UNITY_IOS && !UNITY_EDITOR
+        // iOS thermal input is switched off for now: on-device readings did not match how hot
+        // the phones actually were, so iOS adapts from frame times alone, exactly like the
+        // editor. The bridge below and MobileQualityThermalNative.mm are kept intact, so
+        // turning it back on is adding MAQ_IOS_THERMAL to the iOS scripting defines.
+#if UNITY_IOS && !UNITY_EDITOR && MAQ_IOS_THERMAL
         // Implemented in Runtime/Plugins/iOS/MobileQualityThermalNative.mm. The symbol is
         // prefixed _MAQ_ on purpose: a generic name like _GetThermalState collides at link
         // time with any other package bridging the same API, and a duplicate-symbol error in
@@ -225,7 +229,7 @@ namespace MobileAdjustGameQuality
             }
 #endif
 
-#if UNITY_IOS && !UNITY_EDITOR
+#if UNITY_IOS && !UNITY_EDITOR && MAQ_IOS_THERMAL
             if (m_Failed)
                 return;
 

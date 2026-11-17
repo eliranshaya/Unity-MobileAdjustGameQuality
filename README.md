@@ -21,7 +21,7 @@ Unity 2022.3 LTS or newer · URP 14+ · Android and iOS · no dependencies.
 **Window → Package Manager → `+` → Add package from git URL**, then paste:
 
 ```
-https://github.com/eliranshaya/Unity-MobileAdjustGameQuality.git?path=/Packages/com.eliranshaya.mobileadjustgamequality#v3.4.0
+https://github.com/eliranshaya/Unity-MobileAdjustGameQuality.git?path=/Packages/com.eliranshaya.mobileadjustgamequality#v3.4.1
 ```
 
 That is the current release — the green badge above always shows the newest tag, and swapping
@@ -44,7 +44,7 @@ the last release. Pin the tag for anything you ship.
 ```json
 {
   "dependencies": {
-    "com.eliranshaya.mobileadjustgamequality": "https://github.com/eliranshaya/Unity-MobileAdjustGameQuality.git?path=/Packages/com.eliranshaya.mobileadjustgamequality#v3.4.0"
+    "com.eliranshaya.mobileadjustgamequality": "https://github.com/eliranshaya/Unity-MobileAdjustGameQuality.git?path=/Packages/com.eliranshaya.mobileadjustgamequality#v3.4.1"
   }
 }
 ```
@@ -141,9 +141,10 @@ rather than descending into the 30 fps ones, unless the OS is actively throttlin
 A device with no history yet gets a starting rung from its own GPU, memory and screen
 resolution rather than from one fixed number for the whole market.
 
-Thermal comes from `PowerManager` on Android and `NSProcessInfo.thermalState` on iOS, through
-a bundled plugin that a post-process build step verifies reached the Xcode project. You never
-open Xcode.
+Thermal comes from `PowerManager` on Android. **On iOS thermal is switched off as of 3.4.1**:
+the readings did not match how hot the phones really were, so iOS adapts from frame times
+alone. The `NSProcessInfo.thermalState` bridge still ships and can be turned back on by adding
+`MAQ_IOS_THERMAL` to the iOS scripting define symbols.
 
 In the editor the ladder is pinned to rung 0, because a desktop has nothing useful to tell it.
 
