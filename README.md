@@ -5,7 +5,7 @@ device.**
 
 Quality is not a menu the player never opens and not a guess made from the device model. It is
 one number — which rung of a nine-rung ladder is applied — and the device itself decides it,
-from its own frame times and from how hot it is.
+from its own frame times.
 
 [![Latest release](https://img.shields.io/github/v/tag/eliranshaya/Unity-MobileAdjustGameQuality?label=latest&sort=semver&color=2ea44f)](https://github.com/eliranshaya/Unity-MobileAdjustGameQuality/tags)
 [![Unity 2022.3+](https://img.shields.io/badge/unity-2022.3%2B-black)](https://unity.com)
@@ -21,7 +21,7 @@ Unity 2022.3 LTS or newer · URP 14+ · Android and iOS · no dependencies.
 **Window → Package Manager → `+` → Add package from git URL**, then paste:
 
 ```
-https://github.com/eliranshaya/Unity-MobileAdjustGameQuality.git?path=/Packages/com.eliranshaya.mobileadjustgamequality#v3.4.1
+https://github.com/eliranshaya/Unity-MobileAdjustGameQuality.git?path=/Packages/com.eliranshaya.mobileadjustgamequality#v3.5.0
 ```
 
 That is the current release — the green badge above always shows the newest tag, and swapping
@@ -44,7 +44,7 @@ the last release. Pin the tag for anything you ship.
 ```json
 {
   "dependencies": {
-    "com.eliranshaya.mobileadjustgamequality": "https://github.com/eliranshaya/Unity-MobileAdjustGameQuality.git?path=/Packages/com.eliranshaya.mobileadjustgamequality#v3.4.1"
+    "com.eliranshaya.mobileadjustgamequality": "https://github.com/eliranshaya/Unity-MobileAdjustGameQuality.git?path=/Packages/com.eliranshaya.mobileadjustgamequality#v3.5.0"
   }
 }
 ```
@@ -141,10 +141,10 @@ rather than descending into the 30 fps ones, unless the OS is actively throttlin
 A device with no history yet gets a starting rung from its own GPU, memory and screen
 resolution rather than from one fixed number for the whole market.
 
-Thermal comes from `PowerManager` on Android. **On iOS thermal is switched off as of 3.4.1**:
-the readings did not match how hot the phones really were, so iOS adapts from frame times
-alone. The `NSProcessInfo.thermalState` bridge still ships and can be turned back on by adding
-`MAQ_IOS_THERMAL` to the iOS scripting define symbols.
+**Thermal input is off by default since 3.5.0**, on Android and iOS: quality moves on frame
+times only. The platform code still ships (`PowerManager` on Android, `NSProcessInfo.thermalState`
+on iOS) and is switched back on per platform with the `MAQ_ANDROID_THERMAL` or `MAQ_IOS_THERMAL`
+scripting define.
 
 In the editor the ladder is pinned to rung 0, because a desktop has nothing useful to tell it.
 

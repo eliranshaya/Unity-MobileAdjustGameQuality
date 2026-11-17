@@ -1,7 +1,8 @@
 # Mobile Adjust Game Quality
 
 One button generates a mobile-tuned URP setup. One prefab keeps the frame budget on the
-device by moving along a quality ladder, driven by frame times and by how hot the phone is.
+device by moving along a quality ladder, driven by frame times. (Thermal input is off by
+default since 3.5.0 — see [Thermal](#thermal).)
 
 ---
 
@@ -10,7 +11,7 @@ device by moving along a quality ladder, driven by frame times and by how hot th
 **Window → Package Manager → + → Add package from git URL:**
 
 ```
-https://github.com/eliranshaya/Unity-MobileAdjustGameQuality.git?path=/Packages/com.eliranshaya.mobileadjustgamequality#v3.4.1
+https://github.com/eliranshaya/Unity-MobileAdjustGameQuality.git?path=/Packages/com.eliranshaya.mobileadjustgamequality#v3.5.0
 ```
 
 Leaving the `#v…` off tracks the newest commit on `main` instead. Pin the tag for anything you
@@ -298,6 +299,21 @@ either way, so a wrong guess costs a rough half-minute rather than a bad session
 
 ## Thermal
 
+> **Off by default since 3.5.0, on Android and on iOS.** The package reads no thermal API at
+> all: every device reports `Cool`, there is never a thermal penalty, Hold, Shed or Urgent, and
+> rungs move **only on frame times**. The overlay shows thermal as unavailable. Everything in
+> this section describes how it behaves when switched back on, per platform, with a scripting
+> define (*Player Settings → Other Settings → Scripting Define Symbols*):
+>
+> | Platform | Define |
+> | --- | --- |
+> | Android | `MAQ_ANDROID_THERMAL` |
+> | iOS | `MAQ_IOS_THERMAL` |
+>
+> The cost of running without it: quality drops only once frames already suffer, which is after
+> the OS has begun throttling, and a device at its frame cap has no signal of spare capacity
+> other than frame times staying inside budget.
+
 There is **no temperature in degrees** on either platform, and there cannot be — the
 temperature at which one phone throttles is meaningless on another. What you get is the OS's
 own verdict.
@@ -305,7 +321,7 @@ own verdict.
 | | API | Gives |
 | --- | --- | --- |
 | **Android** | `PowerManager.getCurrentThermalStatus` (API 29+) and `getThermalHeadroom(10)` (API 30+) | status 0-6, plus a 0..1+ forecast where 1.0 means throttling now |
-| **iOS** | **off by default since 3.4.1** — see below | the ladder runs on frame times alone |
+| **iOS** | `NSProcessInfo.thermalState` via a bundled `.mm` | nominal / fair / serious / critical |
 | **Editor, desktop** | none | the ladder runs on frame times alone |
 
 ### Three bands, not two
@@ -359,17 +375,10 @@ is too abrupt for your game, iPhone is where you will see it first.
 Every Android JNI call is wrapped in try/catch: several OEM ROMs throw, and one failure
 disables thermal input rather than retrying forever.
 
-### iOS thermal is switched off (3.4.1)
+### iOS readings
 
-On-device readings on iOS did not match how hot the phones actually were, so as of 3.4.1 the
-package **ignores heat on iOS entirely**: no thermal penalty, no Hold/Shed/Urgent, and the
-overlay shows thermal as unavailable. The ladder still adapts on frame times exactly as it does
-in the editor. Android is unchanged.
-
-The native bridge is still shipped and still compiled into the Xcode project, just never
-called. To turn it back on, add `MAQ_IOS_THERMAL` to the iOS scripting define symbols
-(*Player Settings → iOS → Other Settings → Scripting Define Symbols*). Everything below
-describes how it behaves when enabled.
+iOS was the first platform switched off (3.4.1): on-device readings did not match how hot the
+phones actually were. Investigate that before enabling `MAQ_IOS_THERMAL`.
 
 ### iOS builds work
 

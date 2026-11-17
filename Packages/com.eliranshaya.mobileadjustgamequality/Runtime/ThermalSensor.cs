@@ -33,7 +33,8 @@ namespace MobileAdjustGameQuality
     }
 
     /// <summary>
-    /// Reads the platform thermal API on Android. iOS is off unless <c>MAQ_IOS_THERMAL</c> is defined.
+    /// Reads the platform thermal API. Off by default; enabled per platform by
+    /// <c>MAQ_ANDROID_THERMAL</c> and <c>MAQ_IOS_THERMAL</c>.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -57,7 +58,12 @@ namespace MobileAdjustGameQuality
         /// <summary>The forecast window passed to <c>getThermalHeadroom</c>, in seconds.</summary>
         const int k_HeadroomForecastSeconds = 10;
 
-#if UNITY_ANDROID && !UNITY_EDITOR
+        // Thermal input is switched off on every platform by default: quality follows frame
+        // times alone, and Level/Headroom stay Unknown/NaN, which every consumer reads as
+        // Cool. The platform code is kept intact and returns per platform with a scripting
+        // define - MAQ_ANDROID_THERMAL on Android, MAQ_IOS_THERMAL on iOS.
+
+#if UNITY_ANDROID && !UNITY_EDITOR && MAQ_ANDROID_THERMAL
         /// <summary>
         /// Shortest gap allowed between two <c>getThermalHeadroom</c> calls, in seconds.
         /// </summary>
@@ -161,7 +167,7 @@ namespace MobileAdjustGameQuality
         /// </summary>
         public void Open()
         {
-#if UNITY_ANDROID && !UNITY_EDITOR
+#if UNITY_ANDROID && !UNITY_EDITOR && MAQ_ANDROID_THERMAL
             // Every JNI call is wrapped: several OEM ROMs throw from getSystemService or from
             // the thermal methods themselves, and an uncaught exception during startup takes
             // the whole app down.
@@ -188,7 +194,7 @@ namespace MobileAdjustGameQuality
         /// <summary>Reads the current thermal state. Cheap, and safe from a coroutine.</summary>
         public void Poll()
         {
-#if UNITY_ANDROID && !UNITY_EDITOR
+#if UNITY_ANDROID && !UNITY_EDITOR && MAQ_ANDROID_THERMAL
             if (m_Failed || m_PowerManager == null)
                 return;
 
@@ -266,7 +272,7 @@ namespace MobileAdjustGameQuality
         /// <summary>Releases the JNI handles.</summary>
         public void Dispose()
         {
-#if UNITY_ANDROID && !UNITY_EDITOR
+#if UNITY_ANDROID && !UNITY_EDITOR && MAQ_ANDROID_THERMAL
             try
             {
                 m_PowerManager?.Dispose();
